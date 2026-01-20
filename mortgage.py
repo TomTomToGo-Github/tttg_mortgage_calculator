@@ -45,6 +45,49 @@ def calculate_mortgage(
     return monthly_payment
 
 
+def calculate_property_from_payment(
+    monthly_payment: float,
+    annual_interest_rate: float,
+    years: int,
+    down_payment: float = 0.0,
+) -> float:
+    """Calculate property value from desired monthly payment.
+
+    Parameters
+    ----------
+    monthly_payment : float
+        Desired monthly mortgage payment.
+    annual_interest_rate : float
+        Annual interest rate of the mortgage in percent.
+    years : int
+        Loan term in years.
+    down_payment : float, optional
+        Upfront payment reducing the principal, by default 0.0.
+
+    Returns
+    -------
+    float
+        Property value that results in the given monthly payment.
+    """
+    if monthly_payment <= 0 or years <= 0:
+        return down_payment
+
+    if annual_interest_rate == 0:
+        # P = M * n where n = years * 12
+        loan_amount = monthly_payment * years * 12
+        return loan_amount + down_payment
+
+    monthly_rate = annual_interest_rate / 12 / 100
+    num_payments = years * 12
+
+    # Reverse the mortgage formula: P = M * [(1+r)^n - 1] / [r * (1+r)^n]
+    loan_amount = monthly_payment * (
+        ((1 + monthly_rate) ** num_payments - 1)
+        / (monthly_rate * (1 + monthly_rate) ** num_payments)
+    )
+    return loan_amount + down_payment
+
+
 def calculate_amortization(
     principal: float,
     annual_interest_rate: float,
