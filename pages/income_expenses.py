@@ -519,6 +519,10 @@ def main() -> None:
     monthly_net = total_monthly_income - total_monthly_expenses
     yearly_net = total_yearly_income - total_yearly_expenses
 
+    # Store summary values in session state for cross-page access
+    st.session_state["summary_monthly_income"] = total_monthly_income
+    st.session_state["summary_monthly_expenses"] = total_monthly_expenses
+
     # Summary metrics - Monthly on left, separator, Yearly on right
     col_monthly, col_sep, col_yearly = st.columns([10, 1, 10])
 

@@ -333,6 +333,60 @@ def main() -> None:
 
         st.divider()
 
+        # Import from Income & Expenses (from current session state or defaults file)
+        if st.button("📥 Import Income & Expenses", use_container_width=True):
+            total_income = st.session_state.get("summary_monthly_income")
+            total_expenses = st.session_state.get("summary_monthly_expenses")
+
+            # If not in session state, load from defaults file
+            if total_income is None or total_expenses is None:
+                ie_settings_path = os.path.join(
+                    "saved_settings", "income_expenses", "defaults.json"
+                )
+                if os.path.exists(ie_settings_path):
+                    with open(ie_settings_path, "r", encoding="utf-8") as f:
+                        ie_settings = json.load(f)
+
+                    calc_mode = ie_settings.get("calc_mode", "separate")
+                    raw_monthly_income = sum(
+                        item["amount"]
+                        for item in ie_settings.get("income_monthly_items", [])
+                        if not item.get("hidden", False)
+                    )
+                    raw_monthly_expenses = sum(
+                        item["amount"]
+                        for item in ie_settings.get("expense_monthly_items", [])
+                        if not item.get("hidden", False)
+                    )
+                    converted_yearly_income = sum(
+                        item["amount"]
+                        for item in ie_settings.get("income_monthly_items", [])
+                        if "original_yearly" in item and not item.get("hidden", False)
+                    )
+                    converted_yearly_expenses = sum(
+                        item["amount"]
+                        for item in ie_settings.get("expense_monthly_items", [])
+                        if "original_yearly" in item and not item.get("hidden", False)
+                    )
+
+                    if calc_mode == "monthly":
+                        total_income = raw_monthly_income + converted_yearly_income
+                        total_expenses = raw_monthly_expenses + converted_yearly_expenses
+                    else:
+                        total_income = raw_monthly_income
+                        total_expenses = raw_monthly_expenses
+                else:
+                    total_income = 0.0
+                    total_expenses = 0.0
+
+            st.session_state["income1"] = total_income
+            st.session_state["income1_input"] = format_currency(total_income)
+            st.session_state["monthly_expenses"] = total_expenses
+            st.session_state["monthly_expenses_input"] = format_currency(total_expenses)
+            st.rerun()
+
+        st.divider()
+
         # Income
         st.subheader("💰 Monthly Income")
         col1, col2 = st.columns(2)
