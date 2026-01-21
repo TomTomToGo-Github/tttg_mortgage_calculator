@@ -304,7 +304,7 @@ def main() -> None:
                 "Save",
                 on_click=save_current_preset,
                 args=(preset_name,),
-                use_container_width=True,
+                width="stretch",
             )
 
         preset_options = get_saved_presets()
@@ -321,20 +321,20 @@ def main() -> None:
             on_click=load_preset,
             args=(selected_preset,),
             disabled=not has_presets,
-            use_container_width=True,
+            width="stretch",
         )
 
         # Zero and Reset buttons
         col1, col2 = st.columns(2)
         with col1:
-            st.button("🔄 Reset", on_click=reset_all_fields, use_container_width=True)
+            st.button("🔄 Reset", on_click=reset_all_fields, width="stretch")
         with col2:
-            st.button("0️⃣ Zero", on_click=zero_all_fields, use_container_width=True)
+            st.button("0️⃣ Zero", on_click=zero_all_fields, width="stretch")
 
         st.divider()
 
         # Import from Income & Expenses (from current session state or defaults file)
-        if st.button("📥 Import Income & Expenses", use_container_width=True):
+        if st.button("📥 Import Income & Expenses", width="stretch"):
             total_income = st.session_state.get("summary_monthly_income")
             total_expenses = st.session_state.get("summary_monthly_expenses")
 
@@ -642,7 +642,7 @@ def main() -> None:
         yaxis_tickformat=",.0f",
         separators=", ",
     )
-    st.plotly_chart(fig_liquid, use_container_width=True)
+    st.plotly_chart(fig_liquid, width="stretch")
 
     # 2. Mortgage Progress (Principal Paid vs Remaining Balance)
     st.subheader("🏦 Mortgage Progress")
@@ -658,7 +658,7 @@ def main() -> None:
         yaxis_tickformat=",.0f",
         separators=", ",
     )
-    st.plotly_chart(fig_mortgage, use_container_width=True)
+    st.plotly_chart(fig_mortgage, width="stretch")
 
     # 3. Property Value Over Time
     st.subheader("🏠 Property Value")
@@ -674,7 +674,7 @@ def main() -> None:
         separators=", ",
     )
     fig_property.update_traces(line_color="#28A745")
-    st.plotly_chart(fig_property, use_container_width=True)
+    st.plotly_chart(fig_property, width="stretch")
 
     # 4. Net Worth Projection
     st.subheader("📈 Net Worth Projection")
@@ -689,7 +689,7 @@ def main() -> None:
         yaxis_tickformat=",.0f",
         separators=", ",
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     # 5. Wealth Composition (overall breakdown)
     st.subheader("📊 Wealth Composition")
@@ -704,7 +704,7 @@ def main() -> None:
         yaxis_tickformat=",.0f",
         separators=", ",
     )
-    st.plotly_chart(fig2, use_container_width=True)
+    st.plotly_chart(fig2, width="stretch")
 
     # ----------------------------------------------------------------- Raw Data
     if st.checkbox("Show Raw Data"):

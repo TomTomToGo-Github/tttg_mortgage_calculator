@@ -13,6 +13,7 @@ Welcome to the Financial Calculator app!
 
 Use the sidebar to navigate between pages:
 
-- **🏠 Wealth Calculator**: Project mortgage payments and net worth over time
 - **💰 Income & Expenses**: Track and visualize your income and expense streams
+- **🏠 Wealth Calculator**: Project mortgage payments and net worth over time
+- **📈 Stock Estimator**: Calculate RSU, ESPP, and self-buying stock projections
 """)

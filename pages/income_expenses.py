@@ -651,7 +651,7 @@ def main() -> None:
                 "showarrow": False,
             }],
         )
-        st.plotly_chart(fig_monthly, use_container_width=True, key="monthly_pie")
+        st.plotly_chart(fig_monthly, width="stretch", key="monthly_pie")
 
     with viz_col2:
         # Yearly breakdown pie chart
@@ -679,7 +679,7 @@ def main() -> None:
                 "showarrow": False,
             }],
         )
-        st.plotly_chart(fig_yearly, use_container_width=True, key="yearly_pie")
+        st.plotly_chart(fig_yearly, width="stretch", key="yearly_pie")
 
     # Detailed breakdown bar charts
     st.subheader("Detailed Breakdown")
@@ -734,7 +734,7 @@ def main() -> None:
                 xaxis_tickangle=-45,
                 yaxis_tickformat=",.0f",
             )
-            st.plotly_chart(fig_income, use_container_width=True, key="income_bar")
+            st.plotly_chart(fig_income, width="stretch", key="income_bar")
 
     with breakdown_col2:
         # Expenses breakdown (excluding hidden items)
@@ -784,7 +784,7 @@ def main() -> None:
                 xaxis_tickangle=-45,
                 yaxis_tickformat=",.0f",
             )
-            st.plotly_chart(fig_expenses, use_container_width=True, key="expenses_bar")
+            st.plotly_chart(fig_expenses, width="stretch", key="expenses_bar")
 
 
 if __name__ == "__main__":
