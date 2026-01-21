@@ -184,40 +184,73 @@ def render_item_list(
     float
         Total amount for this category.
     """
-    # Color based on income/expense
+    # Color based on income/expense (only for totals, not subheaders)
     color = "#228B22" if is_income else "#DC143C"  # Dark green / Crimson red
 
-    st.markdown(
-        f"<h3 style='color: {color};'>{emoji} {title}</h3>",
-        unsafe_allow_html=True,
-    )
+    # Subheader in normal black font
+    st.subheader(f"{emoji} {title}")
 
     total = 0.0
     items_to_remove = []
+    items_to_toggle = []
 
     for i, item in enumerate(st.session_state[category]):
-        col1, col2, col3 = st.columns([3, 2, 1])
+        is_hidden = item.get("hidden", False)
+        col1, col2, col3, col4 = st.columns([3, 2, 0.4, 0.4])
+
         with col1:
-            new_name = st.text_input(
-                "Name",
-                value=item["name"],
-                key=f"{category}_name_{i}",
-                label_visibility="collapsed",
-            )
-            st.session_state[category][i]["name"] = new_name
+            if is_hidden:
+                st.markdown(
+                    f"<span style='color: #999; font-style: italic;'>"
+                    f"{item['name']}</span>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                new_name = st.text_input(
+                    "Name",
+                    value=item["name"],
+                    key=f"{category}_name_{i}",
+                    label_visibility="collapsed",
+                )
+                st.session_state[category][i]["name"] = new_name
+
         with col2:
-            amount_str = st.text_input(
-                "Amount",
-                value=format_number(item["amount"]),
-                key=f"{category}_amount_{i}",
-                label_visibility="collapsed",
-            )
-            new_amount = parse_formatted_number(amount_str, item["amount"])
-            st.session_state[category][i]["amount"] = new_amount
-            total += new_amount
+            if is_hidden:
+                st.markdown(
+                    f"<span style='color: #999; font-style: italic;'>"
+                    f"{format_number(item['amount'])}</span>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                amount_str = st.text_input(
+                    "Amount",
+                    value=format_number(item["amount"]),
+                    key=f"{category}_amount_{i}",
+                    label_visibility="collapsed",
+                )
+                new_amount = parse_formatted_number(amount_str, item["amount"])
+                st.session_state[category][i]["amount"] = new_amount
+
+        # Only add to total if not hidden
+        if not is_hidden:
+            total += item["amount"]
+
         with col3:
-            if st.button("🗑️", key=f"{category}_remove_{i}"):
+            # Eye icon: 👁️ for visible, � for hidden
+            eye_icon = "🙈" if is_hidden else "👁️"
+            eye_help = "Show" if is_hidden else "Hide"
+            if st.button(eye_icon, key=f"{category}_toggle_{i}", help=eye_help):
+                items_to_toggle.append(i)
+
+        with col4:
+            if st.button("🗑️", key=f"{category}_remove_{i}", help="Delete"):
                 items_to_remove.append(i)
+
+    # Toggle hidden state
+    for idx in items_to_toggle:
+        current_hidden = st.session_state[category][idx].get("hidden", False)
+        st.session_state[category][idx]["hidden"] = not current_hidden
+        st.rerun()
 
     # Remove items after iteration
     for idx in reversed(items_to_remove):
@@ -268,6 +301,7 @@ def toggle_calculation_mode() -> None:
                 "amount": monthly_amount,
                 "original_yearly": item["amount"],
                 "original_name": item["name"],
+                "hidden": item.get("hidden", False),
             })
 
         for item in st.session_state["expense_yearly_items"]:
@@ -277,6 +311,7 @@ def toggle_calculation_mode() -> None:
                 "amount": monthly_amount,
                 "original_yearly": item["amount"],
                 "original_name": item["name"],
+                "hidden": item.get("hidden", False),
             })
 
         # Clear yearly items (they are now in monthly)
@@ -291,6 +326,7 @@ def toggle_calculation_mode() -> None:
                 st.session_state["income_yearly_items"].append({
                     "name": item["original_name"],
                     "amount": item["amount"] * 12,
+                    "hidden": item.get("hidden", False),
                 })
 
         for item in st.session_state["expense_monthly_items"]:
@@ -298,6 +334,7 @@ def toggle_calculation_mode() -> None:
                 st.session_state["expense_yearly_items"].append({
                     "name": item["original_name"],
                     "amount": item["amount"] * 12,
+                    "hidden": item.get("hidden", False),
                 })
 
         # Remove converted items from monthly
@@ -386,7 +423,10 @@ def main() -> None:
     st.divider()
 
     # Income section - monthly left, yearly right
-    st.header("\U0001F4B5 Income")
+    st.markdown(
+        "<h2 style='color: #228B22;'>\U0001F4B5 Income</h2>",
+        unsafe_allow_html=True,
+    )
     col_income_monthly, col_income_yearly = st.columns(2)
 
     with col_income_monthly:
@@ -408,7 +448,10 @@ def main() -> None:
     st.divider()
 
     # Expenses section - monthly left, yearly right
-    st.header("\U0001F4B8 Expenses")
+    st.markdown(
+        "<h2 style='color: #DC143C;'>\U0001F4B8 Expenses</h2>",
+        unsafe_allow_html=True,
+    )
     col_expense_monthly, col_expense_yearly = st.columns(2)
 
     with col_expense_monthly:
@@ -434,28 +477,30 @@ def main() -> None:
     # Calculate totals directly from session state for accuracy
     calc_mode = st.session_state.get("calc_mode", "separate")
 
-    # Get raw totals from session state
+    # Get raw totals from session state (excluding hidden items)
     raw_monthly_income = sum(
         item["amount"] for item in st.session_state["income_monthly_items"]
-        if "original_yearly" not in item
+        if "original_yearly" not in item and not item.get("hidden", False)
     )
     raw_monthly_expenses = sum(
         item["amount"] for item in st.session_state["expense_monthly_items"]
-        if "original_yearly" not in item
+        if "original_yearly" not in item and not item.get("hidden", False)
     )
     converted_yearly_income = sum(
         item["amount"] for item in st.session_state["income_monthly_items"]
-        if "original_yearly" in item
+        if "original_yearly" in item and not item.get("hidden", False)
     )
     converted_yearly_expenses = sum(
         item["amount"] for item in st.session_state["expense_monthly_items"]
-        if "original_yearly" in item
+        if "original_yearly" in item and not item.get("hidden", False)
     )
     raw_yearly_income = sum(
         item["amount"] for item in st.session_state["income_yearly_items"]
+        if not item.get("hidden", False)
     )
     raw_yearly_expenses = sum(
         item["amount"] for item in st.session_state["expense_yearly_items"]
+        if not item.get("hidden", False)
     )
 
     if calc_mode == "monthly":
@@ -639,9 +684,11 @@ def main() -> None:
     breakdown_col1, breakdown_col2 = st.columns(2)
 
     with breakdown_col1:
-        # Income breakdown
+        # Income breakdown (excluding hidden items)
         income_items = []
         for item in st.session_state["income_monthly_items"]:
+            if item.get("hidden", False):
+                continue
             # Skip items converted from yearly (they have original_yearly marker)
             if "original_yearly" not in item:
                 income_items.append({
@@ -659,6 +706,8 @@ def main() -> None:
         # Only show yearly items in separate mode
         if calc_mode == "separate":
             for item in st.session_state["income_yearly_items"]:
+                if item.get("hidden", False):
+                    continue
                 income_items.append({
                     "Name": item["name"],
                     "Amount": item["amount"] / 12,
@@ -685,9 +734,11 @@ def main() -> None:
             st.plotly_chart(fig_income, use_container_width=True, key="income_bar")
 
     with breakdown_col2:
-        # Expenses breakdown
+        # Expenses breakdown (excluding hidden items)
         expense_items = []
         for item in st.session_state["expense_monthly_items"]:
+            if item.get("hidden", False):
+                continue
             # Skip items converted from yearly (they have original_yearly marker)
             if "original_yearly" not in item:
                 expense_items.append({
@@ -705,6 +756,8 @@ def main() -> None:
         # Only show yearly items in separate mode
         if calc_mode == "separate":
             for item in st.session_state["expense_yearly_items"]:
+                if item.get("hidden", False):
+                    continue
                 expense_items.append({
                     "Name": item["name"],
                     "Amount": item["amount"] / 12,
