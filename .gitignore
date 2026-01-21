@@ -143,6 +143,10 @@ cython_debug/
 *.swo
 *~
 
+# Saved settings (ignore all except defaults)
+saved_settings/**/*.json
+!saved_settings/**/defaults.json
+
 # OS
 .DS_Store
 Thumbs.db

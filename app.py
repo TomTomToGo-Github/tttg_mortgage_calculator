@@ -1,18 +1,10 @@
 import streamlit as st
 
 
-st.set_page_config(
-    page_title="Financial Calculator",
-    page_icon="💰",
-    layout="wide",
-)
+# Redirect to Overview page
+overview_page = st.Page("pages/overview.py", title="Overview", icon="💰", default=True)
+wealth_page = st.Page("pages/wealth_calculator.py", title="Wealth Calculator", icon="🏠")
+income_page = st.Page("pages/income_expenses.py", title="Income & Expenses", icon="💰")
 
-st.title("💰 Financial Calculator")
-st.markdown("""
-Welcome to the Financial Calculator app!
-
-Use the sidebar to navigate between pages:
-
-- **🏠 Wealth Calculator**: Project mortgage payments and net worth over time
-- **💰 Income & Expenses**: Track and visualize your income and expense streams
-""")
+pg = st.navigation([overview_page, income_page, wealth_page])
+pg.run()
