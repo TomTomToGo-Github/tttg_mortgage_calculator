@@ -145,6 +145,90 @@ def get_warning_css(buffer_breach: bool) -> str:
     """
 
 
+def get_preset_input_keys() -> tuple[list[str], list[str], str, str]:
+    currency_keys = [
+        "income1",
+        "income2",
+        "stock_income_usd",
+        "monthly_expenses",
+        "initial_bank_balance",
+        "initial_stock_wealth",
+        "financial_buffer",
+        "property_value",
+        "down_payment",
+    ]
+
+    number_keys = [
+        "usd_eur_rate",
+        "transaction_fee",
+        "bank_return",
+        "stock_growth",
+        "bank_reserve_ratio",
+        "interest_rate",
+        "loan_term",
+        "home_appreciation",
+        "projection_years",
+    ]
+
+    checkbox_key = "reinvest_dividends"
+    monthly_payment_key = "monthly_payment"
+
+    return currency_keys, number_keys, checkbox_key, monthly_payment_key
+
+
+def save_current_preset(preset_name: str) -> None:
+    name = (preset_name or "").strip()
+    if not name:
+        st.error("Please enter a preset name.")
+        return
+
+    if "presets" not in st.session_state:
+        st.session_state["presets"] = {}
+
+    currency_keys, number_keys, checkbox_key, _ = get_preset_input_keys()
+    preset: dict[str, object] = {}
+
+    for key in currency_keys:
+        preset[key] = st.session_state.get(key, "")
+    for key in number_keys:
+        preset[key] = st.session_state.get(key)
+    preset[checkbox_key] = st.session_state.get(checkbox_key, True)
+
+    st.session_state["presets"][name] = preset
+
+
+def load_preset(preset_name: str) -> None:
+    presets = st.session_state.get("presets", {})
+    if preset_name not in presets:
+        return
+
+    preset = presets[preset_name]
+    currency_keys, number_keys, checkbox_key, monthly_payment_key = get_preset_input_keys()
+
+    for key in currency_keys:
+        value = preset.get(key)
+        if value is not None:
+            st.session_state[key] = value
+            st.session_state[f"{key}_input"] = value
+
+    for key in number_keys:
+        value = preset.get(key)
+        if value is not None:
+            st.session_state[key] = value
+
+    if checkbox_key in preset:
+        st.session_state[checkbox_key] = bool(preset[checkbox_key])
+
+    if monthly_payment_key in st.session_state:
+        del st.session_state[monthly_payment_key]
+    if "last_calc_payment" in st.session_state:
+        del st.session_state["last_calc_payment"]
+    if "monthly_payment_input" in st.session_state:
+        del st.session_state["monthly_payment_input"]
+
+    st.rerun()
+
+
 def main() -> None:
     """Run the Streamlit mortgage and net worth calculator app."""
     st.set_page_config(
@@ -166,6 +250,41 @@ def main() -> None:
     # ------------------------------------------------------------------ Sidebar
     with st.sidebar:
         st.header("Financial Inputs")
+
+        if "presets" not in st.session_state:
+            st.session_state["presets"] = {}
+
+        st.subheader("Presets")
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            preset_name = st.text_input(
+                "Preset Name",
+                key="preset_name",
+            )
+        with col2:
+            st.button(
+                "Save",
+                on_click=save_current_preset,
+                args=(preset_name,),
+                use_container_width=True,
+            )
+
+        preset_options = sorted(list(st.session_state["presets"].keys()))
+        has_presets = len(preset_options) > 0
+        select_options = preset_options if has_presets else ["(no presets saved)"]
+        selected_preset = st.selectbox(
+            "Saved Presets",
+            options=select_options,
+            index=0,
+            key="selected_preset",
+        )
+        st.button(
+            "Load",
+            on_click=load_preset,
+            args=(selected_preset,),
+            disabled=not has_presets,
+            use_container_width=True,
+        )
 
         # Zero and Reset buttons
         col1, col2 = st.columns(2)
@@ -211,6 +330,7 @@ def main() -> None:
         reinvest_dividends = st.checkbox(
             "Keep income in stocks",
             value=True,
+            key="reinvest_dividends",
             help="If checked, stock income goes directly to stock portfolio. "
                  "Otherwise treated as regular income (affected by savings ratio).",
         )
@@ -515,6 +635,22 @@ def main() -> None:
                     lambda x: format_currency(x)
                 )
         st.dataframe(display_df)
+
+        if not amortization_schedule.empty:
+            st.subheader("Amortization Schedule Data")
+            display_amort_df = amortization_schedule.copy()
+            amort_numeric_cols = [
+                "Principal Payment",
+                "Interest Payment",
+                "Total Payment",
+                "Remaining Balance",
+            ]
+            for col in amort_numeric_cols:
+                if col in display_amort_df.columns:
+                    display_amort_df[col] = display_amort_df[col].apply(
+                        lambda x: format_currency(x)
+                    )
+            st.dataframe(display_amort_df)
 
 
 if __name__ == "__main__":
