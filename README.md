@@ -1,18 +1,23 @@
-# Mortgage and Net Worth Calculator
+# Financial Calculator
 
-A Streamlit-based web application for projecting mortgage payments and net worth over time.
+A Streamlit-based multipage web application for financial planning, mortgage calculations, and expense tracking.
 
 ## Features
 
+### 🏠 Mortgage Calculator
 - **Mortgage Calculation**: Calculate monthly payments based on property value, interest rate, loan term, and down payment
 - **Reverse Calculation**: Adjust monthly payment to find the corresponding property value
-- **Net Worth Projection**: Track wealth composition over time including:
-  - Bank reserves
-  - Stock portfolio
-  - Home equity
+- **Net Worth Projection**: Track wealth composition over time including bank reserves, stock portfolio, and home equity
 - **Income Management**: Support for multiple income sources including USD stock dividends with EUR conversion
 - **Interactive Charts**: Visualize liquid assets, mortgage progress, property value, and net worth projections
 - **Financial Buffer Warning**: Alerts when bank reserves drop below a specified threshold
+
+### 💰 Income & Expenses Tracker
+- **Monthly Items**: Track recurring monthly income and expenses
+- **Yearly Items**: Track one-off annual income and expenses
+- **Calculate Monthly Button**: Convert yearly items to monthly equivalents (divided by 12)
+- **Summary Metrics**: View monthly/yearly totals, net income, and savings rate
+- **Visualizations**: Pie charts for income vs expenses, bar charts for detailed breakdowns
 
 ## Installation
 
@@ -28,7 +33,7 @@ pip install -r requirements.txt
 Run the Streamlit app:
 
 ```bash
-streamlit run mortgage_calculator.py
+streamlit run app.py
 ```
 
 ## Dependencies
@@ -42,7 +47,10 @@ streamlit run mortgage_calculator.py
 ## Project Structure
 
 ```
-├── mortgage_calculator.py  # Main Streamlit application
+├── app.py                  # Main entry point (multipage app)
+├── pages/
+│   ├── 1_Mortgage_Calculator.py  # Mortgage and net worth page
+│   └── 2_Income_Expenses.py      # Income/expenses tracker page
 ├── mortgage.py             # Mortgage calculation functions
 ├── net_worth.py            # Net worth projection logic
 ├── income.py               # Income conversion utilities
