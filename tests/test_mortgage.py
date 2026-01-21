@@ -2,7 +2,7 @@
 import pytest
 import pandas as pd
 
-from mortgage import (
+from src.mortgage import (
     calculate_mortgage,
     calculate_amortization,
     calculate_property_from_payment,

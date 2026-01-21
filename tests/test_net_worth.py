@@ -2,7 +2,7 @@
 import pytest
 import pandas as pd
 
-from net_worth import calculate_net_worth
+from src.net_worth import calculate_net_worth
 
 
 class TestCalculateNetWorth:

@@ -1,14 +1,20 @@
+import json
+import os
+
 import streamlit as st
 import plotly.express as px
 
-from formatting import format_currency, format_number, parse_formatted_number
-from income import convert_usd_to_eur
-from mortgage import (
+from src.formatting import format_currency, format_number, parse_formatted_number
+from src.income import convert_usd_to_eur
+from src.mortgage import (
     calculate_amortization,
     calculate_mortgage,
     calculate_property_from_payment,
 )
-from net_worth import calculate_net_worth
+from src.net_worth import calculate_net_worth
+
+
+SETTINGS_DIR = os.path.join("saved_settings", "wealth_calculator")
 
 
 # Default values for all inputs
@@ -145,14 +151,132 @@ def get_warning_css(buffer_breach: bool) -> str:
     """
 
 
+def get_preset_input_keys() -> tuple[list[str], list[str], str, str]:
+    currency_keys = [
+        "income1",
+        "income2",
+        "stock_income_usd",
+        "monthly_expenses",
+        "initial_bank_balance",
+        "initial_stock_wealth",
+        "financial_buffer",
+        "property_value",
+        "down_payment",
+    ]
+
+    number_keys = [
+        "usd_eur_rate",
+        "transaction_fee",
+        "bank_return",
+        "stock_growth",
+        "bank_reserve_ratio",
+        "interest_rate",
+        "loan_term",
+        "home_appreciation",
+        "projection_years",
+    ]
+
+    checkbox_key = "reinvest_dividends"
+    monthly_payment_key = "monthly_payment"
+
+    return currency_keys, number_keys, checkbox_key, monthly_payment_key
+
+
+def get_saved_presets() -> list[str]:
+    """Get list of saved preset files.
+
+    Returns
+    -------
+    list[str]
+        List of saved preset names (without .json extension).
+    """
+    if not os.path.exists(SETTINGS_DIR):
+        return []
+    files = [f[:-5] for f in os.listdir(SETTINGS_DIR) if f.endswith(".json")]
+    return sorted(files)
+
+
+def save_current_preset(preset_name: str) -> None:
+    """Save current settings to a JSON file.
+
+    Parameters
+    ----------
+    preset_name : str
+        Name for the preset file.
+    """
+    name = (preset_name or "").strip()
+    if not name:
+        st.error("Please enter a preset name.")
+        return
+
+    os.makedirs(SETTINGS_DIR, exist_ok=True)
+
+    currency_keys, number_keys, checkbox_key, _ = get_preset_input_keys()
+    preset: dict[str, object] = {}
+
+    for key in currency_keys:
+        preset[key] = st.session_state.get(key, "")
+    for key in number_keys:
+        preset[key] = st.session_state.get(key)
+    preset[checkbox_key] = st.session_state.get(checkbox_key, True)
+
+    filepath = os.path.join(SETTINGS_DIR, f"{name}.json")
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(preset, f, indent=2)
+
+
+def load_preset(preset_name: str) -> None:
+    """Load settings from a JSON file.
+
+    Parameters
+    ----------
+    preset_name : str
+        Name of the preset file to load.
+    """
+    if not preset_name or preset_name == "(no presets saved)":
+        return
+
+    filepath = os.path.join(SETTINGS_DIR, f"{preset_name}.json")
+    if not os.path.exists(filepath):
+        return
+
+    with open(filepath, "r", encoding="utf-8") as f:
+        preset = json.load(f)
+
+    currency_keys, number_keys, checkbox_key, monthly_payment_key = get_preset_input_keys()
+
+    for key in currency_keys:
+        value = preset.get(key)
+        if value is not None:
+            st.session_state[key] = value
+            st.session_state[f"{key}_input"] = value
+
+    for key in number_keys:
+        value = preset.get(key)
+        if value is not None:
+            st.session_state[key] = value
+
+    if checkbox_key in preset:
+        st.session_state[checkbox_key] = bool(preset[checkbox_key])
+
+    if monthly_payment_key in st.session_state:
+        del st.session_state[monthly_payment_key]
+    if "last_calc_payment" in st.session_state:
+        del st.session_state["last_calc_payment"]
+    if "monthly_payment_input" in st.session_state:
+        del st.session_state["monthly_payment_input"]
+
+    st.rerun()
+
+
 def main() -> None:
-    """Run the Streamlit mortgage and net worth calculator app."""
+    """Run the Streamlit wealth calculator app."""
     st.set_page_config(
-        page_title="Mortgage and Net Worth Calculator",
+        page_title="Wealth Calculator",
         page_icon="🏠",
         layout="wide",
     )
-    st.title("🏠 Mortgage and Net Worth Projection")
+    st.title("🏠 Wealth Calculator")
 
     # Initialize session state for number inputs
     init_session_state()
@@ -167,6 +291,38 @@ def main() -> None:
     # ------------------------------------------------------------------ Sidebar
     with st.sidebar:
         st.header("Financial Inputs")
+
+        st.subheader("Presets")
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            preset_name = st.text_input(
+                "Preset Name",
+                key="preset_name",
+            )
+        with col2:
+            st.button(
+                "Save",
+                on_click=save_current_preset,
+                args=(preset_name,),
+                use_container_width=True,
+            )
+
+        preset_options = get_saved_presets()
+        has_presets = len(preset_options) > 0
+        select_options = preset_options if has_presets else ["(no presets saved)"]
+        selected_preset = st.selectbox(
+            "Saved Presets",
+            options=select_options,
+            index=0,
+            key="selected_preset",
+        )
+        st.button(
+            "Load",
+            on_click=load_preset,
+            args=(selected_preset,),
+            disabled=not has_presets,
+            use_container_width=True,
+        )
 
         # Zero and Reset buttons
         col1, col2 = st.columns(2)
@@ -212,6 +368,7 @@ def main() -> None:
         reinvest_dividends = st.checkbox(
             "Keep income in stocks",
             value=True,
+            key="reinvest_dividends",
             help="If checked, stock income goes directly to stock portfolio. "
                  "Otherwise treated as regular income (affected by savings ratio).",
         )
@@ -516,6 +673,22 @@ def main() -> None:
                     lambda x: format_currency(x)
                 )
         st.dataframe(display_df)
+
+        if not amortization_schedule.empty:
+            st.subheader("Amortization Schedule Data")
+            display_amort_df = amortization_schedule.copy()
+            amort_numeric_cols = [
+                "Principal Payment",
+                "Interest Payment",
+                "Total Payment",
+                "Remaining Balance",
+            ]
+            for col in amort_numeric_cols:
+                if col in display_amort_df.columns:
+                    display_amort_df[col] = display_amort_df[col].apply(
+                        lambda x: format_currency(x)
+                    )
+            st.dataframe(display_amort_df)
 
 
 if __name__ == "__main__":

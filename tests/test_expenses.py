@@ -1,7 +1,7 @@
 """Tests for expenses calculation module."""
 import pytest
 
-from expenses import total_monthly_expenses
+from src.expenses import total_monthly_expenses
 
 
 class TestTotalMonthlyExpenses:

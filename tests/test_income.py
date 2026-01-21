@@ -1,7 +1,7 @@
 """Tests for income calculation module."""
 import pytest
 
-from income import convert_usd_to_eur, total_monthly_income
+from src.income import convert_usd_to_eur, total_monthly_income
 
 
 class TestConvertUsdToEur:

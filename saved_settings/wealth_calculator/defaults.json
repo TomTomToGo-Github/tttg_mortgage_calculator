@@ -1,0 +1,21 @@
+{
+  "income1": "3 000.00",
+  "income2": "1 200.00",
+  "stock_income_usd": "600.00",
+  "monthly_expenses": "1 000.00",
+  "initial_bank_balance": "50 000.00",
+  "initial_stock_wealth": "20 000.00",
+  "financial_buffer": "10 000.00",
+  "property_value": "800 000.00",
+  "down_payment": "200 000.00",
+  "usd_eur_rate": 0.92,
+  "transaction_fee": 5.0,
+  "bank_return": 0.5,
+  "stock_growth": 2.0,
+  "bank_reserve_ratio": 1.0,
+  "interest_rate": 2.5,
+  "loan_term": 30,
+  "home_appreciation": 2.0,
+  "projection_years": 30,
+  "reinvest_dividends": true
+}

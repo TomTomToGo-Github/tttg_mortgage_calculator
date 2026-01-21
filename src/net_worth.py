@@ -1,8 +1,8 @@
 import pandas as pd
 
-from mortgage import calculate_amortization, calculate_mortgage
-from income import total_monthly_income
-from expenses import total_monthly_expenses
+from src.mortgage import calculate_amortization, calculate_mortgage
+from src.income import total_monthly_income
+from src.expenses import total_monthly_expenses
 
 
 def calculate_net_worth(

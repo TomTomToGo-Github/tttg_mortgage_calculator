@@ -1,7 +1,7 @@
 """Tests for formatting utility module."""
 import pytest
 
-from formatting import format_currency, format_number, parse_formatted_number
+from src.formatting import format_currency, format_number, parse_formatted_number
 
 
 class TestFormatCurrency:

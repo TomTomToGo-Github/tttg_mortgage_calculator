@@ -4,7 +4,7 @@ A Streamlit-based multipage web application for financial planning, mortgage cal
 
 ## Features
 
-### 🏠 Mortgage Calculator
+### 🏠 Wealth Calculator
 - **Mortgage Calculation**: Calculate monthly payments based on property value, interest rate, loan term, and down payment
 - **Reverse Calculation**: Adjust monthly payment to find the corresponding property value
 - **Net Worth Projection**: Track wealth composition over time including bank reserves, stock portfolio, and home equity
@@ -49,13 +49,14 @@ streamlit run app.py
 ```
 ├── app.py                  # Main entry point (multipage app)
 ├── pages/
-│   ├── 1_Mortgage_Calculator.py  # Mortgage and net worth page
+│   ├── 1_Wealth_Calculator.py    # Wealth and net worth page
 │   └── 2_Income_Expenses.py      # Income/expenses tracker page
-├── mortgage.py             # Mortgage calculation functions
-├── net_worth.py            # Net worth projection logic
-├── income.py               # Income conversion utilities
-├── expenses.py             # Expense handling
-├── formatting.py           # Currency and number formatting
+├── src/
+│   ├── mortgage.py         # Mortgage calculation functions
+│   ├── net_worth.py        # Net worth projection logic
+│   ├── income.py           # Income conversion utilities
+│   ├── expenses.py         # Expense handling
+│   └── formatting.py       # Currency and number formatting
 ├── requirements.txt        # Python dependencies
 └── tests/                  # Unit tests
 ```

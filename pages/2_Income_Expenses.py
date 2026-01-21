@@ -4,12 +4,11 @@ import os
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 
-from formatting import format_currency, format_number, parse_formatted_number
+from src.formatting import format_currency, format_number, parse_formatted_number
 
 
-SETTINGS_DIR = "saved_settings"
+SETTINGS_DIR = os.path.join("saved_settings", "income_expenses")
 
 
 def get_saved_settings() -> list[str]:
