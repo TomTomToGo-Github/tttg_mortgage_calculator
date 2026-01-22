@@ -1,10 +1,101 @@
 """Stock Estimator page for RSU, ESPP, and self-buying calculations."""
+import json
+import math
+import os
+
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
 from src.formatting import format_currency, format_number
+
+
+SETTINGS_DIR = os.path.join("saved_settings", "stock_estimator")
+
+
+def get_saved_presets() -> list[str]:
+    """Get list of saved preset files.
+
+    Returns
+    -------
+    list[str]
+        List of saved preset names (without .json extension).
+    """
+    if not os.path.exists(SETTINGS_DIR):
+        return []
+    files = [f[:-5] for f in os.listdir(SETTINGS_DIR) if f.endswith(".json")]
+    return sorted(files)
+
+
+def save_current_preset(preset_name: str) -> None:
+    """Save current settings to a JSON file.
+
+    Parameters
+    ----------
+    preset_name : str
+        Name for the preset file.
+    """
+    name = (preset_name or "").strip()
+    if not name:
+        st.error("Please enter a preset name.")
+        return
+
+    os.makedirs(SETTINGS_DIR, exist_ok=True)
+
+    preset = {
+        "stock_start_price": st.session_state.get("stock_start_price", 40.0),
+        "usd_to_eur": st.session_state.get("usd_to_eur", 0.92),
+        "yearly_growth_rate": st.session_state.get("yearly_growth_rate", 0.0),
+        "projection_years": st.session_state.get("projection_years", 5),
+        "projection_extra_months": st.session_state.get("projection_extra_months", 0),
+        "rsu_enabled": st.session_state.get("rsu_enabled", True),
+        "rsu_transaction_fee": st.session_state.get("rsu_transaction_fee", 9.99),
+        "rsu_selling_loss": st.session_state.get("rsu_selling_loss", 0.05),
+        "rsu_blocks": st.session_state.get("rsu_blocks", []),
+        "espp_enabled": st.session_state.get("espp_enabled", True),
+        "espp_gross_income": st.session_state.get("espp_gross_income", 5000.0),
+        "espp_contribution": st.session_state.get("espp_contribution", 10.0),
+        "espp_start_offset": st.session_state.get("espp_start_offset", 0),
+        "espp_vesting_interval": st.session_state.get("espp_vesting_interval", 6),
+        "espp_discount": st.session_state.get("espp_discount", 15.0),
+        "self_enabled": st.session_state.get("self_enabled", True),
+        "self_net_income": st.session_state.get("self_net_income", 3500.0),
+        "self_investment_type": st.session_state.get("self_investment_type", "Fixed Amount"),
+        "self_investment_pct": st.session_state.get("self_investment_pct", 10.0),
+        "self_investment_amt": st.session_state.get("self_investment_amt", 350.0),
+    }
+
+    filepath = os.path.join(SETTINGS_DIR, f"{name}.json")
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(preset, f, indent=2)
+
+
+def load_preset(preset_name: str) -> None:
+    """Load settings from a JSON file.
+
+    Parameters
+    ----------
+    preset_name : str
+        Name of the preset file to load.
+    """
+    if not preset_name or preset_name == "(no presets saved)":
+        return
+
+    filepath = os.path.join(SETTINGS_DIR, f"{preset_name}.json")
+    if not os.path.exists(filepath):
+        return
+
+    with open(filepath, "r", encoding="utf-8") as f:
+        preset = json.load(f)
+
+    # Load all settings into session state
+    for key, value in preset.items():
+        if value is not None:
+            st.session_state[key] = value
+
+    # Mark that preset was loaded - rerun happens automatically after callback
+    st.session_state["_preset_loaded"] = True
 
 
 def get_stock_price_at_month(
@@ -37,8 +128,10 @@ def calculate_rsu_vesting(
     vesting_period_months: int,
     num_vesting_intervals: int,
     stock_prices: list[float],
-    tax_sell_ratio: float = 0.5,
     start_offset: int = 0,
+    usd_to_eur: float = 1.0,
+    transaction_fee_usd: float = 9.99,
+    selling_loss_usd: float = 0.05,
 ) -> pd.DataFrame:
     """Calculate RSU vesting schedule.
 
@@ -51,34 +144,48 @@ def calculate_rsu_vesting(
     num_vesting_intervals : int
         Number of vesting events.
     stock_prices : list[float]
-        Stock prices for each month.
-    tax_sell_ratio : float
-        Ratio of stocks sold for tax (default 0.5 + buffer).
+        Stock prices for each month (in USD).
     start_offset : int
         Number of months from now when RSU grant starts.
+    usd_to_eur : float
+        USD to EUR conversion rate.
+    transaction_fee_usd : float
+        Transaction fee per vesting event (in USD).
+    selling_loss_usd : float
+        Fixed dollar amount lost per stock when E*Trade sells (in USD).
 
     Returns
     -------
     pd.DataFrame
-        DataFrame with monthly RSU values.
+        DataFrame with monthly RSU values (in EUR).
     """
     months = len(stock_prices)
     data = {
         "Month": list(range(1, months + 1)),
         "RSU_Stocks_Vested": [0.0] * months,
+        "RSU_Stocks_Sold": [0.0] * months,
         "RSU_Stocks_Kept": [0.0] * months,
+        "RSU_Tax_Due": [0.0] * months,
+        "RSU_Sale_Proceeds": [0.0] * months,
+        "RSU_Transaction_Fee": [0.0] * months,
+        "RSU_Rest_Amount": [0.0] * months,
         "RSU_Value": [0.0] * months,
         "RSU_Cumulative_Stocks": [0.0] * months,
         "RSU_Cumulative_Value": [0.0] * months,
+        "RSU_Cumulative_Rest": [0.0] * months,
     }
 
     if num_vesting_intervals <= 0 or vesting_period_months <= 0:
         return pd.DataFrame(data)
 
-    stocks_per_vest = total_stocks / num_vesting_intervals
+    # Calculate stocks per vest with proper distribution of remainder
+    # E.g., 5 stocks over 4 intervals: first gets 2, rest get 1 each
+    base_stocks = total_stocks // num_vesting_intervals
+    remainder = total_stocks % num_vesting_intervals
     interval_months = vesting_period_months / num_vesting_intervals
 
     cumulative_stocks = 0.0
+    cumulative_rest = 0.0
 
     for i in range(num_vesting_intervals):
         # Vest at end of each interval, 0-indexed
@@ -86,16 +193,52 @@ def calculate_rsu_vesting(
         vest_month_1indexed = start_offset + int((i + 1) * interval_months)
         vest_index = vest_month_1indexed - 1
         if 0 <= vest_index < months:
-            stocks_kept = stocks_per_vest * (1 - tax_sell_ratio)
-            data["RSU_Stocks_Vested"][vest_index] = stocks_per_vest
+            # Distribute remainder to first intervals
+            vested = base_stocks + (1 if i < remainder else 0)
+            stock_price_usd = stock_prices[vest_index]
+
+            # Tax due = vested * stock_price / 2
+            tax_due_usd = vested * stock_price_usd / 2
+
+            # Sell half + 1 for taxes (e.g., 35->18 sold, 36->19 sold)
+            # Odd: ceil(35/2) = 18, Even: 36/2 + 1 = 19
+            stocks_sold = (vested // 2) + 1
+            stocks_kept = vested - stocks_sold
+
+            # Sale proceeds at E*Trade price (stock_price - selling_loss)
+            etrade_price_usd = stock_price_usd - selling_loss_usd
+            sale_proceeds_usd = stocks_sold * etrade_price_usd
+
+            # Rest amount = sale proceeds - tax due - transaction fee
+            rest_amount_usd = sale_proceeds_usd - tax_due_usd - transaction_fee_usd
+
+            # Convert to EUR
+            stock_price_eur = stock_price_usd * usd_to_eur
+            tax_due_eur = tax_due_usd * usd_to_eur
+            sale_proceeds_eur = sale_proceeds_usd * usd_to_eur
+            transaction_fee_eur = transaction_fee_usd * usd_to_eur
+            rest_amount_eur = rest_amount_usd * usd_to_eur
+
+            # Value of kept stocks at real market price
+            value_eur = stocks_kept * stock_price_eur
+
+            data["RSU_Stocks_Vested"][vest_index] = vested
+            data["RSU_Stocks_Sold"][vest_index] = stocks_sold
             data["RSU_Stocks_Kept"][vest_index] = stocks_kept
-            data["RSU_Value"][vest_index] = stocks_kept * stock_prices[vest_index]
+            data["RSU_Tax_Due"][vest_index] = tax_due_eur
+            data["RSU_Sale_Proceeds"][vest_index] = sale_proceeds_eur
+            data["RSU_Transaction_Fee"][vest_index] = transaction_fee_eur
+            data["RSU_Rest_Amount"][vest_index] = rest_amount_eur
+            data["RSU_Value"][vest_index] = max(0, value_eur)
 
     # Calculate cumulative values
     for month in range(months):
         cumulative_stocks += data["RSU_Stocks_Kept"][month]
+        cumulative_rest += data["RSU_Rest_Amount"][month]
+        stock_price_eur = stock_prices[month] * usd_to_eur
         data["RSU_Cumulative_Stocks"][month] = cumulative_stocks
-        data["RSU_Cumulative_Value"][month] = cumulative_stocks * stock_prices[month]
+        data["RSU_Cumulative_Value"][month] = cumulative_stocks * stock_price_eur
+        data["RSU_Cumulative_Rest"][month] = cumulative_rest
 
     return pd.DataFrame(data)
 
@@ -239,31 +382,87 @@ def main() -> None:
     with st.sidebar:
         st.header("Stock Settings")
 
-        st.subheader("📊 Stock Price")
-        stock_start_price = st.number_input(
-            "Starting Stock Price ($)",
-            min_value=0.01,
-            value=100.0,
-            step=1.0,
-            key="stock_start_price",
+        # Preset management
+        st.subheader("💾 Presets")
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            preset_name = st.text_input("Preset Name", key="preset_name")
+        with col2:
+            st.button(
+                "Save",
+                on_click=save_current_preset,
+                args=(preset_name,),
+                width="stretch",
+            )
+
+        preset_options = get_saved_presets()
+        has_presets = len(preset_options) > 0
+        select_options = preset_options if has_presets else ["(no presets saved)"]
+        selected_preset = st.selectbox(
+            "Saved Presets",
+            options=select_options,
+            index=0,
+            key="selected_preset",
         )
+        st.button(
+            "Load",
+            on_click=load_preset,
+            args=(selected_preset,),
+            disabled=not has_presets,
+            width="stretch",
+        )
+
+        st.divider()
+
+        # Initialize defaults if not in session state
+        if "stock_start_price" not in st.session_state:
+            st.session_state["stock_start_price"] = 40.0
+        if "usd_to_eur" not in st.session_state:
+            st.session_state["usd_to_eur"] = 0.92
+        if "yearly_growth_rate" not in st.session_state:
+            st.session_state["yearly_growth_rate"] = 0.0
+        if "projection_years" not in st.session_state:
+            st.session_state["projection_years"] = 5
+        if "projection_extra_months" not in st.session_state:
+            st.session_state["projection_extra_months"] = 0
+
+        st.subheader("📊 Stock Price")
+        c1, c2 = st.columns(2)
+        with c1:
+            stock_start_price = st.number_input(
+                "Starting Stock Price ($)",
+                min_value=0.01,
+                value=st.session_state["stock_start_price"],
+                step=1.0,
+                key="stock_start_price_input",
+            )
+            st.session_state["stock_start_price"] = stock_start_price
+        with c2:
+            usd_to_eur = st.number_input(
+                "USD to EUR",
+                min_value=0.01,
+                value=st.session_state["usd_to_eur"],
+                step=0.01,
+                format="%.2f",
+                key="usd_to_eur_input",
+                help="Conversion rate from USD to EUR",
+            )
+            st.session_state["usd_to_eur"] = usd_to_eur
         yearly_growth_rate = st.number_input(
             "Yearly Growth Rate (%)",
             min_value=-50.0,
             max_value=100.0,
-            value=10.0,
             step=1.0,
             key="yearly_growth_rate",
         ) / 100
 
-        st.markdown("**Projection Period**")
+        st.markdown("**Visualization Range**")
         col_years, col_months = st.columns(2)
         with col_years:
             projection_years = st.number_input(
                 "Years",
                 min_value=0,
                 max_value=10,
-                value=4,
                 step=1,
                 key="projection_years",
             )
@@ -272,7 +471,6 @@ def main() -> None:
                 "Months",
                 min_value=0,
                 max_value=11,
-                value=0,
                 step=1,
                 key="projection_extra_months",
             )
@@ -283,194 +481,357 @@ def main() -> None:
         st.divider()
 
         # RSU Settings - Multiple blocks
-        st.subheader("🎁 RSU (Restricted Stock Units)")
-
-        # Global tax ratio for all RSU plans
-        rsu_tax_ratio = st.number_input(
-            "Tax + Fees Sell Ratio (%)",
-            min_value=0.0,
-            max_value=100.0,
-            value=50.0,
-            step=1.0,
-            key="rsu_tax_ratio",
-            help="Applied to all RSU plans",
-        ) / 100
-
-        # Initialize RSU blocks in session state
+        if "rsu_enabled" not in st.session_state:
+            st.session_state["rsu_enabled"] = True
+        # Initialize RSU defaults if not in session state (outside enabled check)
+        if "rsu_transaction_fee" not in st.session_state:
+            st.session_state["rsu_transaction_fee"] = 9.99
+        if "rsu_selling_loss" not in st.session_state:
+            st.session_state["rsu_selling_loss"] = 0.05
         if "rsu_blocks" not in st.session_state:
             st.session_state["rsu_blocks"] = [
                 {
+                    "total_stocks": 500,
+                    "start_offset": 2,
+                    "vest_months": 48,
+                    "intervals": 4,
+                    "hidden": False,
+                }
+            ]
+
+        rsu_enabled = st.checkbox(
+            "🎁 RSU (Restricted Stock Units)", key="rsu_enabled"
+        )
+        rsu_blocks_data = []
+        rsu_transaction_fee = 9.99
+        rsu_selling_loss = 0.05
+
+        if rsu_enabled:
+            # RSU calculation info
+            with st.expander("ℹ️ RSU Calculation Details"):
+                st.markdown(
+                    "**How RSU vesting is calculated:**\n\n"
+                    "**Abbreviations:**\n"
+                    "- V ... number of vested stocks\n"
+                    "- P ... stock price (\\$)\n"
+                    "- SL ... selling loss (\\$)\n"
+                    "- TF ... transaction fee (\\$)\n\n"
+                    "**Calculation steps:**\n"
+                    "1. **Tax Due (T)** = V × P ÷ 2  "
+                    "*(e.g., 35 stock units at 40\\$ each → 35 * 40 / 2 = 700\\$)*\n"
+                    "2. **Stocks Sold (S)** = floor(V ÷ 2) + 1 *(e.g., 35 → 18, 36 → 19)*\n"
+                    "3. **Sale Proceeds (SP)** = S × (P - SL) "
+                    "*(e.g., 18 × (40 - 0.05) = 719.1\\$)*\n"
+                    "4. **Rest Amount (R)** = SP - T - TF "
+                    "*(e.g., 719.1 - 700 - 9.99 = 9.11\\$)*\n"
+                    "5. **Value Held** = (V - S) × P "
+                    "*(e.g., (35 - 18) × 40 = 520\\$)*\n\n"
+                    "**Rest Amount** = leftover cash on E*Trade after taxes and fees.\n\n"
+                    "⚠️ **Note:** The calculated rest value may diverge slightly from "
+                    "reality due to:\n"
+                    "- E*Trade may occasionally sell one more stock than expected\n"
+                    "- This model uses a simplified stock price projection (constant growth "
+                    "rate), while actual rest amounts depend on the real stock price at "
+                    "vesting time — higher prices yield higher rest amounts, and vice versa\n"
+                    "- The selling loss is not predictable (difference between market price "
+                    "and E*Trade selling price varies)\n"
+                    "- Additional transaction costs apply when selling stocks and "
+                    "transferring money overseas"
+                )
+
+            # Transaction fee and selling loss settings
+            c1, c2 = st.columns(2)
+            with c1:
+                rsu_transaction_fee = st.number_input(
+                    "Transaction Fee ($)",
+                    min_value=0.0,
+                    value=st.session_state["rsu_transaction_fee"],
+                    step=0.01,
+                    format="%.2f",
+                    key="rsu_transaction_fee_input",
+                    help="Fee per vesting transaction (in USD)",
+                )
+                st.session_state["rsu_transaction_fee"] = rsu_transaction_fee
+            with c2:
+                rsu_selling_loss = st.number_input(
+                    "Selling Loss ($)",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=st.session_state["rsu_selling_loss"],
+                    step=0.01,
+                    format="%.2f",
+                    key="rsu_selling_loss_input",
+                    help="Fixed dollar amount lost per stock because E*Trade selling price is lower than market price",
+                )
+                st.session_state["rsu_selling_loss"] = rsu_selling_loss
+
+            # Render each RSU block
+            blocks_to_remove = []
+            blocks_to_toggle = []
+
+            for i, block in enumerate(st.session_state["rsu_blocks"]):
+                is_hidden = block.get("hidden", False)
+                with st.container():
+                    col_title, col_eye, col_del = st.columns([5, 0.5, 0.5])
+                    with col_title:
+                        if is_hidden:
+                            st.markdown(
+                                f"<span style='color: #999; font-style: italic;'>"
+                                f"Plan {i + 1}</span>",
+                                unsafe_allow_html=True,
+                            )
+                        else:
+                            st.markdown(f"**Plan {i + 1}**")
+                    with col_eye:
+                        eye_icon = "🙈" if is_hidden else "👁️"
+                        eye_help = "Show" if is_hidden else "Hide"
+                        if st.button(eye_icon, key=f"rsu_toggle_{i}", help=eye_help):
+                            blocks_to_toggle.append(i)
+                    with col_del:
+                        if st.button("🗑️", key=f"rsu_delete_{i}", help="Delete"):
+                            blocks_to_remove.append(i)
+
+                    # All fields in one row: Stocks, Start, Vest, Intervals
+                    if is_hidden:
+                        # Show greyed out values
+                        c1, c2, c3, c4 = st.columns(4)
+                        with c1:
+                            st.markdown(
+                                f"<span style='color: #999;'>"
+                                f"Stocks: {block['total_stocks']:,}</span>",
+                                unsafe_allow_html=True,
+                            )
+                        with c2:
+                            st.markdown(
+                                f"<span style='color: #999;'>"
+                                f"Start: {block['start_offset']}m</span>",
+                                unsafe_allow_html=True,
+                            )
+                        with c3:
+                            st.markdown(
+                                f"<span style='color: #999;'>"
+                                f"Vest: {block['vest_months']}M</span>",
+                                unsafe_allow_html=True,
+                            )
+                        with c4:
+                            st.markdown(
+                                f"<span style='color: #999;'>"
+                                f"Intervals: {block['intervals']}</span>",
+                                unsafe_allow_html=True,
+                            )
+                    else:
+                        c1, c2, c3, c4 = st.columns(4)
+                        with c1:
+                            block["total_stocks"] = st.number_input(
+                                "Stocks",
+                                min_value=0,
+                                value=block["total_stocks"],
+                                step=100,
+                                key=f"rsu_total_{i}",
+                            )
+                        with c2:
+                            block["start_offset"] = st.number_input(
+                                "Start (m from now)",
+                                min_value=0,
+                                value=block["start_offset"],
+                                step=1,
+                                key=f"rsu_start_{i}",
+                            )
+                        with c3:
+                            block["vest_months"] = st.number_input(
+                                "Vesting period (M)",
+                                min_value=1,
+                                value=block["vest_months"],
+                                step=1,
+                                key=f"rsu_vest_m_{i}",
+                            )
+                        with c4:
+                            block["intervals"] = st.number_input(
+                                "Intervals",
+                                min_value=1,
+                                max_value=48,
+                                value=block["intervals"],
+                                step=1,
+                                key=f"rsu_intervals_{i}",
+                            )
+
+                    # Only add to calculation if not hidden
+                    if not is_hidden:
+                        vesting_period = block["vest_months"]
+                        rsu_blocks_data.append({
+                            "total_stocks": block["total_stocks"],
+                            "start_offset": block["start_offset"],
+                            "vesting_period": vesting_period,
+                            "intervals": block["intervals"],
+                            "usd_to_eur": usd_to_eur,
+                            "transaction_fee": rsu_transaction_fee,
+                            "selling_loss": rsu_selling_loss,
+                        })
+
+                    if i < len(st.session_state["rsu_blocks"]) - 1:
+                        st.markdown("---")
+
+            # Handle toggles
+            if blocks_to_toggle:
+                for idx in blocks_to_toggle:
+                    current_hidden = st.session_state["rsu_blocks"][idx].get("hidden", False)
+                    st.session_state["rsu_blocks"][idx]["hidden"] = not current_hidden
+
+            # Handle deletions
+            if blocks_to_remove:
+                for idx in reversed(blocks_to_remove):
+                    st.session_state["rsu_blocks"].pop(idx)
+
+            # Add new RSU block button
+            if st.button("➕ Add RSU Plan", key="add_rsu_block"):
+                st.session_state["rsu_blocks"].append({
                     "total_stocks": 1000,
                     "start_offset": 0,
                     "vest_months": 48,
                     "intervals": 4,
-                }
-            ]
-
-        # Render each RSU block
-        blocks_to_remove = []
-        rsu_blocks_data = []
-
-        for i, block in enumerate(st.session_state["rsu_blocks"]):
-            with st.container():
-                col_title, col_del = st.columns([5, 1])
-                with col_title:
-                    st.markdown(f"**Plan {i + 1}**")
-                with col_del:
-                    if st.button("🗑️", key=f"rsu_delete_{i}", help="Delete"):
-                        blocks_to_remove.append(i)
-
-                # All fields in one row: Stocks, Start, Vest, Intervals
-                c1, c2, c3, c4 = st.columns(4)
-                with c1:
-                    block["total_stocks"] = st.number_input(
-                        "Stocks",
-                        min_value=0,
-                        value=block["total_stocks"],
-                        step=100,
-                        key=f"rsu_total_{i}",
-                    )
-                with c2:
-                    block["start_offset"] = st.number_input(
-                        "Start (m from now)",
-                        min_value=0,
-                        value=block["start_offset"],
-                        step=1,
-                        key=f"rsu_start_{i}",
-                    )
-                with c3:
-                    block["vest_months"] = st.number_input(
-                        "Vesting period (M)",
-                        min_value=1,
-                        value=block["vest_months"],
-                        step=1,
-                        key=f"rsu_vest_m_{i}",
-                    )
-                with c4:
-                    block["intervals"] = st.number_input(
-                        "Intervals",
-                        min_value=1,
-                        max_value=48,
-                        value=block["intervals"],
-                        step=1,
-                        key=f"rsu_intervals_{i}",
-                    )
-
-                vesting_period = block["vest_months"]
-
-                rsu_blocks_data.append({
-                    "total_stocks": block["total_stocks"],
-                    "start_offset": block["start_offset"],
-                    "vesting_period": vesting_period,
-                    "intervals": block["intervals"],
-                    "tax_ratio": rsu_tax_ratio,
+                    "hidden": False,
                 })
-
-                if i < len(st.session_state["rsu_blocks"]) - 1:
-                    st.markdown("---")
-
-        # Handle deletions
-        for idx in reversed(blocks_to_remove):
-            st.session_state["rsu_blocks"].pop(idx)
-            st.rerun()
-
-        # Add new RSU block button
-        if st.button("➕ Add RSU Plan", key="add_rsu_block"):
-            st.session_state["rsu_blocks"].append({
-                "total_stocks": 1000,
-                "start_offset": 0,
-                "vest_months": 48,
-                "intervals": 4,
-            })
-            st.rerun()
 
         st.divider()
 
         # ESPP Settings
-        st.subheader("💼 ESPP (Employee Stock Purchase Plan)")
-        c1, c2 = st.columns(2)
-        with c1:
-            espp_gross_income = st.number_input(
-                "Monthly Gross Income (€)",
-                min_value=0.0,
-                value=5000.0,
-                step=100.0,
-                key="espp_gross_income",
-            )
-        with c2:
-            espp_contribution = st.number_input(
-                "Contribution Rate (%)",
-                min_value=0.0,
-                max_value=15.0,
-                value=10.0,
-                step=1.0,
-                key="espp_contribution",
-                help="Percentage of gross income contributed to ESPP",
-            ) / 100
+        if "espp_enabled" not in st.session_state:
+            st.session_state["espp_enabled"] = True
+        # Initialize ESPP defaults if not in session state (outside enabled check)
+        if "espp_gross_income" not in st.session_state:
+            st.session_state["espp_gross_income"] = 4000.0
+        if "espp_contribution" not in st.session_state:
+            st.session_state["espp_contribution"] = 15.0
+        if "espp_start_offset" not in st.session_state:
+            st.session_state["espp_start_offset"] = 8
+        if "espp_vesting_interval" not in st.session_state:
+            st.session_state["espp_vesting_interval"] = 6
+        if "espp_discount" not in st.session_state:
+            st.session_state["espp_discount"] = 15.0
 
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            espp_start_offset = st.number_input(
-                "Start (m from now)",
-                min_value=0,
-                value=0,
-                step=1,
-                key="espp_start_offset",
-            )
-        with c2:
-            espp_vesting_interval = st.number_input(
-                "Vesting interval (M)",
-                min_value=1,
-                max_value=12,
-                value=6,
-                step=1,
-                key="espp_vesting_interval",
-            )
-        with c3:
-            espp_discount = st.number_input(
-                "Discount (%)",
-                min_value=0.0,
-                max_value=50.0,
-                value=15.0,
-                step=1.0,
-                key="espp_discount",
-            ) / 100
+        espp_enabled = st.checkbox(
+            "💼 ESPP (Employee Stock Purchase Plan)", key="espp_enabled"
+        )
+
+        if espp_enabled:
+            c1, c2 = st.columns(2)
+            with c1:
+                espp_gross_income = st.number_input(
+                    "Monthly Gross Income (€)",
+                    min_value=0.0,
+                    value=st.session_state["espp_gross_income"],
+                    step=100.0,
+                    key="espp_gross_income_input",
+                )
+                st.session_state["espp_gross_income"] = espp_gross_income
+            with c2:
+                espp_contribution_pct = st.number_input(
+                    "Contribution Rate (%)",
+                    min_value=0.0,
+                    max_value=15.0,
+                    value=st.session_state["espp_contribution"],
+                    step=1.0,
+                    key="espp_contribution_input",
+                    help="Percentage of gross income contributed to ESPP",
+                )
+                st.session_state["espp_contribution"] = espp_contribution_pct
+                espp_contribution = espp_contribution_pct / 100
+
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                espp_start_offset = st.number_input(
+                    "Start (m from now)",
+                    min_value=0,
+                    value=st.session_state["espp_start_offset"],
+                    step=1,
+                    key="espp_start_offset_input",
+                )
+                st.session_state["espp_start_offset"] = espp_start_offset
+            with c2:
+                espp_vesting_interval = st.number_input(
+                    "Vesting interval (M)",
+                    min_value=1,
+                    max_value=12,
+                    value=st.session_state["espp_vesting_interval"],
+                    step=1,
+                    key="espp_vesting_interval_input",
+                )
+                st.session_state["espp_vesting_interval"] = espp_vesting_interval
+            with c3:
+                espp_discount_pct = st.number_input(
+                    "Discount (%)",
+                    min_value=0.0,
+                    max_value=50.0,
+                    value=st.session_state["espp_discount"],
+                    step=1.0,
+                    key="espp_discount_input",
+                )
+                st.session_state["espp_discount"] = espp_discount_pct
+                espp_discount = espp_discount_pct / 100
+        else:
+            espp_gross_income = 0.0
+            espp_contribution = 0.0
+            espp_start_offset = 0
+            espp_vesting_interval = 6
+            espp_discount = 0.0
 
         st.divider()
 
         # Self Buying Settings
-        st.subheader("🛒 Self Buying")
-        self_net_income = st.number_input(
-            "Monthly Net Income (€)",
-            min_value=0.0,
-            value=3500.0,
-            step=100.0,
-            key="self_net_income",
+        if "self_enabled" not in st.session_state:
+            st.session_state["self_enabled"] = True
+        # Initialize Self Buying defaults if not in session state (outside enabled check)
+        if "self_net_income" not in st.session_state:
+            st.session_state["self_net_income"] = 3500.0
+        if "self_investment_pct" not in st.session_state:
+            st.session_state["self_investment_pct"] = 10.0
+        if "self_investment_amt" not in st.session_state:
+            st.session_state["self_investment_amt"] = 350.0
+
+        self_enabled = st.checkbox(
+            "🛒 Self Buying", key="self_enabled"
         )
-        self_investment_type = st.radio(
-            "Investment Type",
-            options=["Fixed Amount", "Percentage"],
-            key="self_investment_type",
-            horizontal=True,
-        )
-        if self_investment_type == "Percentage":
-            self_investment = st.number_input(
-                "Investment (%)",
+
+        if self_enabled:
+            self_net_income = st.number_input(
+                "Monthly Net Income (€)",
                 min_value=0.0,
-                max_value=100.0,
-                value=10.0,
-                step=1.0,
-                key="self_investment_pct",
+                value=st.session_state["self_net_income"],
+                step=100.0,
+                key="self_net_income_input",
             )
-            is_percentage = True
+            st.session_state["self_net_income"] = self_net_income
+
+            self_investment_type = st.radio(
+                "Investment Type",
+                options=["Fixed Amount", "Percentage"],
+                key="self_investment_type",
+                horizontal=True,
+            )
+            if self_investment_type == "Percentage":
+                self_investment = st.number_input(
+                    "Investment (%)",
+                    min_value=0.0,
+                    max_value=100.0,
+                    value=st.session_state["self_investment_pct"],
+                    step=1.0,
+                    key="self_investment_pct_input",
+                )
+                st.session_state["self_investment_pct"] = self_investment
+                is_percentage = True
+            else:
+                self_investment = st.number_input(
+                    "Investment Amount (€)",
+                    min_value=0.0,
+                    value=st.session_state["self_investment_amt"],
+                    step=50.0,
+                    key="self_investment_amt_input",
+                )
+                st.session_state["self_investment_amt"] = self_investment
+                is_percentage = False
         else:
-            self_investment = st.number_input(
-                "Investment Amount (€)",
-                min_value=0.0,
-                value=350.0,
-                step=50.0,
-                key="self_investment_amt",
-            )
+            self_net_income = 0.0
+            self_investment = 0.0
             is_percentage = False
 
     # Calculate stock prices for projection period
@@ -487,8 +848,10 @@ def main() -> None:
             block_data["vesting_period"],
             block_data["intervals"],
             stock_prices,
-            block_data["tax_ratio"],
             block_data["start_offset"],
+            block_data["usd_to_eur"],
+            block_data["transaction_fee"],
+            block_data["selling_loss"],
         )
         rsu_dfs.append(block_df)
 
@@ -497,18 +860,30 @@ def main() -> None:
         rsu_df = rsu_dfs[0].copy()
         for df in rsu_dfs[1:]:
             rsu_df["RSU_Stocks_Vested"] += df["RSU_Stocks_Vested"]
+            rsu_df["RSU_Stocks_Sold"] += df["RSU_Stocks_Sold"]
             rsu_df["RSU_Stocks_Kept"] += df["RSU_Stocks_Kept"]
+            rsu_df["RSU_Tax_Due"] += df["RSU_Tax_Due"]
+            rsu_df["RSU_Sale_Proceeds"] += df["RSU_Sale_Proceeds"]
+            rsu_df["RSU_Transaction_Fee"] += df["RSU_Transaction_Fee"]
+            rsu_df["RSU_Rest_Amount"] += df["RSU_Rest_Amount"]
             rsu_df["RSU_Value"] += df["RSU_Value"]
             rsu_df["RSU_Cumulative_Stocks"] += df["RSU_Cumulative_Stocks"]
             rsu_df["RSU_Cumulative_Value"] += df["RSU_Cumulative_Value"]
+            rsu_df["RSU_Cumulative_Rest"] += df["RSU_Cumulative_Rest"]
     else:
         rsu_df = pd.DataFrame({
-            "Month": list(range(projection_months)),
+            "Month": list(range(1, projection_months + 1)),
             "RSU_Stocks_Vested": [0.0] * projection_months,
+            "RSU_Stocks_Sold": [0.0] * projection_months,
             "RSU_Stocks_Kept": [0.0] * projection_months,
+            "RSU_Tax_Due": [0.0] * projection_months,
+            "RSU_Sale_Proceeds": [0.0] * projection_months,
+            "RSU_Transaction_Fee": [0.0] * projection_months,
+            "RSU_Rest_Amount": [0.0] * projection_months,
             "RSU_Value": [0.0] * projection_months,
             "RSU_Cumulative_Stocks": [0.0] * projection_months,
             "RSU_Cumulative_Value": [0.0] * projection_months,
+            "RSU_Cumulative_Rest": [0.0] * projection_months,
         })
 
     espp_df = calculate_espp_vesting(
@@ -527,10 +902,13 @@ def main() -> None:
         stock_prices,
     )
 
-    # Combine data for visualization
+    # Convert stock prices to EUR for visualization
+    stock_prices_eur = [p * usd_to_eur for p in stock_prices]
+
+    # Combine data for visualization (all values in EUR)
     combined_df = pd.DataFrame({
         "Month": list(range(1, projection_months + 1)),
-        "Stock_Price": stock_prices,
+        "Stock_Price": stock_prices_eur,
         "RSU_Value": rsu_df["RSU_Cumulative_Value"],
         "ESPP_Value": espp_df["ESPP_Cumulative_Value"],
         "Self_Value": self_df["Self_Cumulative_Value"],
@@ -549,26 +927,26 @@ def main() -> None:
     with col1:
         st.metric(
             "RSU Portfolio Value",
-            format_currency(combined_df["RSU_Value"].iloc[final_month], symbol="$"),
+            format_currency(combined_df["RSU_Value"].iloc[final_month], symbol="€"),
             f"{rsu_df['RSU_Cumulative_Stocks'].iloc[final_month]:.1f} shares",
         )
     with col2:
         st.metric(
             "ESPP Portfolio Value",
-            format_currency(combined_df["ESPP_Value"].iloc[final_month], symbol="$"),
+            format_currency(combined_df["ESPP_Value"].iloc[final_month], symbol="€"),
             f"{espp_df['ESPP_Cumulative_Stocks'].iloc[final_month]:.1f} shares",
         )
     with col3:
         st.metric(
             "Self-Bought Value",
-            format_currency(combined_df["Self_Value"].iloc[final_month], symbol="$"),
+            format_currency(combined_df["Self_Value"].iloc[final_month], symbol="€"),
             f"{self_df['Self_Cumulative_Stocks'].iloc[final_month]:.1f} shares",
         )
     with col4:
         st.metric(
             "Total Portfolio Value",
-            format_currency(combined_df["Total_Value"].iloc[final_month], symbol="$"),
-            f"Stock: ${stock_prices[final_month]:.2f}",
+            format_currency(combined_df["Total_Value"].iloc[final_month], symbol="€"),
+            f"Stock: €{stock_prices_eur[final_month]:.2f}",
         )
 
     # Visualizations
@@ -581,7 +959,7 @@ def main() -> None:
         x="Month",
         y="Stock_Price",
         title="Stock Price Projection",
-        labels={"Stock_Price": "Price ($)", "Month": "Month"},
+        labels={"Stock_Price": "Price (€)", "Month": "Month"},
     )
     fig_price.update_layout(hovermode="x unified")
     st.plotly_chart(fig_price, width="stretch")
@@ -621,7 +999,7 @@ def main() -> None:
     fig_portfolio.update_layout(
         title="Cumulative Portfolio Value by Category",
         xaxis_title="Month",
-        yaxis_title="Value ($)",
+        yaxis_title="Value (€)",
         hovermode="x unified",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
@@ -633,8 +1011,27 @@ def main() -> None:
 
     with tab1:
         st.markdown("**RSU Plans Summary**")
-        st.markdown(f"- **Tax/Fees Ratio:** {rsu_tax_ratio * 100:.0f}%")
-        st.markdown(f"- **Number of Plans:** {len(rsu_blocks_data)}")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown(f"- **Tax Sell Rule:** floor(vested/2) + 1 stocks sold")
+            st.markdown(f"- **Transaction Fee:** ${rsu_transaction_fee:.2f}")
+            st.markdown(f"- **Selling Loss:** ${rsu_selling_loss:.2f}")
+        with col2:
+            st.markdown(f"- **Number of Plans:** {len(rsu_blocks_data)}")
+            final_rest = rsu_df["RSU_Cumulative_Rest"].iloc[-1] if len(rsu_df) > 0 else 0
+            st.markdown(f"- **Cumulative Rest Amount:** €{final_rest:.2f}")
+            # Calculate RSU received wealth ratio
+            if len(rsu_df) > 0 and rsu_blocks_data:
+                final_stock_value = rsu_df["RSU_Cumulative_Value"].iloc[-1]
+                total_granted = sum(b["total_stocks"] for b in rsu_blocks_data)
+                final_stock_price_eur = stock_prices[-1] * usd_to_eur
+                granted_value = total_granted * final_stock_price_eur
+                total_wealth = final_stock_value + final_rest
+                wealth_ratio = (total_wealth / granted_value * 100) if granted_value > 0 else 0
+                st.markdown(
+                    f"- **RSU Received Wealth Ratio:** {wealth_ratio:.1f}% "
+                    f"*(= (stock value + rest) / granted value)*"
+                )
 
         for idx, block_data in enumerate(rsu_blocks_data):
             st.markdown(f"**Plan {idx + 1}:** {block_data['total_stocks']:,} stocks, "
@@ -644,9 +1041,11 @@ def main() -> None:
 
         # RSU vesting events
         vest_events = rsu_df[rsu_df["RSU_Stocks_Vested"] > 0][
-            ["Month", "RSU_Stocks_Vested", "RSU_Stocks_Kept", "RSU_Value"]
+            ["Month", "RSU_Stocks_Vested", "RSU_Stocks_Sold", "RSU_Stocks_Kept",
+             "RSU_Tax_Due", "RSU_Sale_Proceeds", "RSU_Rest_Amount", "RSU_Value"]
         ].copy()
-        vest_events.columns = ["Month", "Stocks Vested", "Stocks Kept", "Value at Vest"]
+        vest_events.columns = ["Month", "Vested", "Sold", "Kept",
+                               "Tax Due (€)", "Sale Proceeds (€)", "Rest (€)", "Value (€)"]
         if not vest_events.empty:
             st.dataframe(vest_events, width="stretch")
 
@@ -692,7 +1091,7 @@ def main() -> None:
         st.subheader("Combined Data")
         display_df = combined_df.copy()
         for col in ["Stock_Price", "RSU_Value", "ESPP_Value", "Self_Value", "Total_Value"]:
-            display_df[col] = display_df[col].apply(lambda x: f"${x:,.2f}")
+            display_df[col] = display_df[col].apply(lambda x: f"€{x:,.2f}")
         st.dataframe(display_df, width="stretch")
 
 

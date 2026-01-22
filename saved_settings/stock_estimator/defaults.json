@@ -1,0 +1,28 @@
+{
+  "stock_start_price": 40.0,
+  "yearly_growth_rate": 0.0,
+  "projection_years": 5,
+  "projection_extra_months": 0,
+  "rsu_enabled": true,
+  "rsu_tax_ratio": 50.0,
+  "rsu_blocks": [
+    {
+      "total_stocks": 500,
+      "start_offset": 2,
+      "vest_months": 48,
+      "intervals": 4,
+      "hidden": false
+    }
+  ],
+  "espp_enabled": true,
+  "espp_gross_income": 4000.0,
+  "espp_contribution": 15.0,
+  "espp_start_offset": 8,
+  "espp_vesting_interval": 6,
+  "espp_discount": 15.0,
+  "self_enabled": true,
+  "self_net_income": 3500.0,
+  "self_investment_type": "Fixed Amount",
+  "self_investment_pct": 10.0,
+  "self_investment_amt": 350.0
+}
