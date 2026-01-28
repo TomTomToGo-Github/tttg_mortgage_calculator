@@ -164,6 +164,7 @@ def render_item_list(
     title: str,
     emoji: str,
     is_income: bool = True,
+    is_yearly: bool = False,
 ) -> float:
     """Render an editable list of income/expense items.
 
@@ -177,6 +178,8 @@ def render_item_list(
         Emoji to display with the title.
     is_income : bool
         True for income items (green), False for expense items (red).
+    is_yearly : bool
+        True for yearly items, False for monthly items.
 
     Returns
     -------
@@ -258,10 +261,23 @@ def render_item_list(
 
     col1, col2 = st.columns([3, 1])
     with col1:
-        st.markdown(
-            f"<span style='color: {color};'>**Total: {format_currency(total)}**</span>",
-            unsafe_allow_html=True,
-        )
+        # Show total and the equivalent in the other period
+        if is_yearly:
+            monthly_equiv = total / 12
+            st.markdown(
+                f"<span style='color: {color};'>**Total: {format_currency(total)}**</span>"
+                f"<br><span style='color: {color}; font-size: 0.9em;'>"
+                f"(Monthly: {format_currency(monthly_equiv)})</span>",
+                unsafe_allow_html=True,
+            )
+        else:
+            yearly_equiv = total * 12
+            st.markdown(
+                f"<span style='color: {color};'>**Total: {format_currency(total)}**</span>"
+                f"<br><span style='color: {color}; font-size: 0.9em;'>"
+                f"(Yearly: {format_currency(yearly_equiv)})</span>",
+                unsafe_allow_html=True,
+            )
     with col2:
         if st.button("➕ Add", key=f"{category}_add"):
             add_item(category)
@@ -359,6 +375,27 @@ def main() -> None:
         page_icon="💰",
         layout="wide",
     )
+
+    # Make dividers more prominent
+    st.markdown(
+        """
+        <style>
+        [data-testid="stVerticalBlockBorderWrapper"] hr,
+        [data-testid="stSidebar"] hr,
+        div[data-testid="stHorizontalBlock"] hr,
+        .stDivider hr,
+        hr {
+            border: none !important;
+            border-top: 3px solid #888 !important;
+            margin: 1.5em 0 !important;
+            height: 0 !important;
+            background: transparent !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     st.title("💰 Income & Expenses Tracker")
 
     init_finance_state()
@@ -442,6 +479,7 @@ def main() -> None:
             "Once a year",
             "\U0001F4B0",
             is_income=True,
+            is_yearly=True,
         )
 
     st.divider()
@@ -467,6 +505,7 @@ def main() -> None:
             "Once a year",
             "\U0001F5D3",
             is_income=False,
+            is_yearly=True,
         )
 
     # Summary section

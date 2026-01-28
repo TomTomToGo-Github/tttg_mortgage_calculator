@@ -22,6 +22,7 @@ CURRENCY_DEFAULTS = {
     "income1": 3000.0,
     "income2": 1200.0,
     "stock_income_usd": 600.0,
+    "espp_income_eur": 0.0,
     "monthly_expenses": 1000.0,
     "initial_bank_balance": 50000.0,
     "initial_stock_wealth": 20000.0,
@@ -156,6 +157,7 @@ def get_preset_input_keys() -> tuple[list[str], list[str], str, str]:
         "income1",
         "income2",
         "stock_income_usd",
+        "espp_income_eur",
         "monthly_expenses",
         "initial_bank_balance",
         "initial_stock_wealth",
@@ -176,10 +178,11 @@ def get_preset_input_keys() -> tuple[list[str], list[str], str, str]:
         "projection_years",
     ]
 
-    checkbox_key = "reinvest_dividends"
+    checkbox_key = "sell_stocks_monthly"
+    selectbox_key = "sells_per_year_label"
     monthly_payment_key = "monthly_payment"
 
-    return currency_keys, number_keys, checkbox_key, monthly_payment_key
+    return currency_keys, number_keys, checkbox_key, selectbox_key, monthly_payment_key
 
 
 def get_saved_presets() -> list[str]:
@@ -211,14 +214,15 @@ def save_current_preset(preset_name: str) -> None:
 
     os.makedirs(SETTINGS_DIR, exist_ok=True)
 
-    currency_keys, number_keys, checkbox_key, _ = get_preset_input_keys()
+    currency_keys, number_keys, checkbox_key, selectbox_key, _ = get_preset_input_keys()
     preset: dict[str, object] = {}
 
     for key in currency_keys:
         preset[key] = st.session_state.get(key, "")
     for key in number_keys:
         preset[key] = st.session_state.get(key)
-    preset[checkbox_key] = st.session_state.get(checkbox_key, True)
+    preset[checkbox_key] = st.session_state.get(checkbox_key, False)
+    preset[selectbox_key] = st.session_state.get(selectbox_key, "12 (monthly)")
 
     filepath = os.path.join(SETTINGS_DIR, f"{name}.json")
     with open(filepath, "w", encoding="utf-8") as f:
@@ -243,7 +247,9 @@ def load_preset(preset_name: str) -> None:
     with open(filepath, "r", encoding="utf-8") as f:
         preset = json.load(f)
 
-    currency_keys, number_keys, checkbox_key, monthly_payment_key = get_preset_input_keys()
+    currency_keys, number_keys, checkbox_key, selectbox_key, monthly_payment_key = (
+        get_preset_input_keys()
+    )
 
     for key in currency_keys:
         value = preset.get(key)
@@ -259,6 +265,9 @@ def load_preset(preset_name: str) -> None:
     if checkbox_key in preset:
         st.session_state[checkbox_key] = bool(preset[checkbox_key])
 
+    if selectbox_key in preset:
+        st.session_state[selectbox_key] = preset[selectbox_key]
+
     if monthly_payment_key in st.session_state:
         del st.session_state[monthly_payment_key]
     if "last_calc_payment" in st.session_state:
@@ -269,14 +278,51 @@ def load_preset(preset_name: str) -> None:
     st.rerun()
 
 
+def delete_preset(preset_name: str) -> None:
+    """Delete a saved preset file.
+
+    Parameters
+    ----------
+    preset_name : str
+        Name of the preset file to delete.
+    """
+    if not preset_name or preset_name == "(no presets saved)":
+        return
+
+    filepath = os.path.join(SETTINGS_DIR, f"{preset_name}.json")
+    if os.path.exists(filepath):
+        os.remove(filepath)
+
+
 def main() -> None:
-    """Run the Streamlit wealth calculator app."""
+    """Run the Streamlit wealth estimator app."""
     st.set_page_config(
-        page_title="Wealth Calculator",
+        page_title="Wealth Estimator",
         page_icon="🏠",
         layout="wide",
     )
-    st.title("🏠 Wealth Calculator")
+
+    # Make dividers more prominent
+    st.markdown(
+        """
+        <style>
+        [data-testid="stVerticalBlockBorderWrapper"] hr,
+        [data-testid="stSidebar"] hr,
+        div[data-testid="stHorizontalBlock"] hr,
+        .stDivider hr,
+        hr {
+            border: none !important;
+            border-top: 3px solid #888 !important;
+            margin: 1.5em 0 !important;
+            height: 0 !important;
+            background: transparent !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.title("🏠 Wealth Estimator")
 
     # Initialize session state for number inputs
     init_session_state()
@@ -290,51 +336,89 @@ def main() -> None:
 
     # ------------------------------------------------------------------ Sidebar
     with st.sidebar:
-        st.header("Financial Inputs")
-
-        st.subheader("Presets")
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            preset_name = st.text_input(
-                "Preset Name",
-                key="preset_name",
-            )
-        with col2:
-            st.button(
-                "Save",
-                on_click=save_current_preset,
-                args=(preset_name,),
-                width="stretch",
-            )
-
+        st.divider()
+        st.subheader("💾 Settings")
         preset_options = get_saved_presets()
         has_presets = len(preset_options) > 0
         select_options = preset_options if has_presets else ["(no presets saved)"]
         selected_preset = st.selectbox(
-            "Saved Presets",
+            "Load Settings",
             options=select_options,
             index=0,
             key="selected_preset",
         )
-        st.button(
-            "Load",
-            on_click=load_preset,
-            args=(selected_preset,),
-            disabled=not has_presets,
-            width="stretch",
-        )
+        col_load, col_delete = st.columns(2)
+        with col_load:
+            st.button(
+                "Load",
+                on_click=load_preset,
+                args=(selected_preset,),
+                disabled=not has_presets,
+                use_container_width=True,
+            )
+        with col_delete:
+            st.button(
+                "Delete",
+                on_click=delete_preset,
+                args=(selected_preset,),
+                disabled=not has_presets,
+                use_container_width=True,
+            )
 
-        # Zero and Reset buttons
-        col1, col2 = st.columns(2)
-        with col1:
-            st.button("🔄 Reset", on_click=reset_all_fields, width="stretch")
-        with col2:
-            st.button("0️⃣ Zero", on_click=zero_all_fields, width="stretch")
+        preset_name = st.text_input("Save Current Settings As", key="preset_name")
+        if st.button("Save", key="save_preset_btn", use_container_width=True):
+            save_current_preset(preset_name)
 
         st.divider()
 
-        # Import from Income & Expenses (from current session state or defaults file)
-        if st.button("📥 Import Income & Expenses", width="stretch"):
+        # Zero and Reset buttons
+        st.button(
+            "0️⃣ Zero Monetary Fields", on_click=zero_all_fields, use_container_width=True
+        )
+        st.button(
+            "🔄 Reset Defaults", on_click=reset_all_fields, use_container_width=True
+        )
+
+        st.divider()
+
+        # Income & Expenses
+        st.subheader("💰 Monthly Income & Expenses")
+        col1, col2 = st.columns(2)
+        with col1:
+            import_ie_clicked = st.button(
+                "📥 Import from Income & Expenses",
+                use_container_width=True,
+                key="import_ie_btn",
+            )
+        with col2:
+            import_stock_clicked = st.button(
+                "📥 Import from Stock Estimator",
+                use_container_width=True,
+                key="import_stock_btn",
+            )
+        col1, col2 = st.columns(2)
+        with col1:
+            income1 = currency_input("Primary Income (Net)", 3000.0, "income1")
+        with col2:
+            income2 = currency_input("Secondary Income (Net)", 1200.0, "income2")
+        monthly_expenses = currency_input(
+            "Monthly Expenses", 1000.0, "monthly_expenses"
+        )
+
+        # Stock income with USD to EUR conversion
+        col1, col2 = st.columns(2)
+        with col1:
+            stock_income_usd = currency_input(
+                "Stock Income (USD, e.g. RSU)", 600.0, "stock_income_usd"
+            )
+        with col2:
+            espp_income_eur = currency_input(
+                "Income Stock Buys (€, e.g. ESPP)", 0.0, "espp_income_eur"
+            )
+
+        st.divider()
+
+        if import_ie_clicked:
             total_income = st.session_state.get("summary_monthly_income")
             total_expenses = st.session_state.get("summary_monthly_expenses")
 
@@ -379,69 +463,90 @@ def main() -> None:
                     total_income = 0.0
                     total_expenses = 0.0
 
-            st.session_state["income1"] = total_income
-            st.session_state["income1_input"] = format_currency(total_income)
-            st.session_state["monthly_expenses"] = total_expenses
-            st.session_state["monthly_expenses_input"] = format_currency(total_expenses)
+            st.session_state["income1"] = format_number(total_income)
+            st.session_state["monthly_expenses"] = format_number(total_expenses)
+            # Remove _input keys to avoid conflict with widget default values
+            if "income1_input" in st.session_state:
+                del st.session_state["income1_input"]
+            if "monthly_expenses_input" in st.session_state:
+                del st.session_state["monthly_expenses_input"]
             st.rerun()
 
-        st.divider()
+        if import_stock_clicked:
+            # Import stock income from Stock Estimator
+            # First try session state, then fall back to defaults.json
+            stock_settings = {}
 
-        # Income
-        st.subheader("💰 Monthly Income")
-        col1, col2 = st.columns(2)
-        with col1:
-            income1 = currency_input("Primary Income (Net)", 3000.0, "income1")
-        with col2:
-            income2 = currency_input("Secondary Income (Net)", 1200.0, "income2")
+            # Check if Stock Estimator has been initialized in session state
+            if "_stock_estimator_initialized" in st.session_state:
+                # Read from session state
+                stock_settings = {
+                    "rsu_enabled": st.session_state.get("rsu_enabled", True),
+                    "rsu_blocks": st.session_state.get("rsu_blocks", []),
+                    "stock_start_price": st.session_state.get("stock_start_price", 40.0),
+                    "espp_enabled": st.session_state.get("espp_enabled", True),
+                    "espp_gross_income": st.session_state.get("espp_gross_income", 5000.0),
+                    "espp_contribution": st.session_state.get("espp_contribution", 10.0),
+                    "espp_discount": st.session_state.get("espp_discount", 15.0),
+                }
+            else:
+                # Fall back to defaults.json
+                stock_settings_path = os.path.join(
+                    "saved_settings", "stock_estimator", "defaults.json"
+                )
+                if os.path.exists(stock_settings_path):
+                    with open(stock_settings_path, "r", encoding="utf-8") as f:
+                        stock_settings = json.load(f)
 
-        # Stock income with USD to EUR conversion
-        st.markdown("**Stock/Dividend Income (USD → EUR)**")
-        stock_income_usd = currency_input(
-            "Monthly Stock Income (USD)", 600.0, "stock_income_usd"
-        )
-        col1, col2 = st.columns(2)
-        with col1:
-            usd_eur_rate = st.number_input(
-                "USD/EUR Rate",
-                min_value=0.01,
-                step=0.01,
-                format="%.4f",
-                key="usd_eur_rate",
-            )
-        with col2:
-            transaction_fee = st.number_input(
-                "Monthly Fee (€)",
-                min_value=0.0,
-                step=1.0,
-                key="transaction_fee",
-            )
-        stock_income = convert_usd_to_eur(
-            stock_income_usd, usd_eur_rate, transaction_fee
-        )
-        reinvest_dividends = st.checkbox(
-            "Keep income in stocks",
-            value=True,
-            key="reinvest_dividends",
-            help="If checked, stock income goes directly to stock portfolio. "
-                 "Otherwise treated as regular income (affected by savings ratio).",
-        )
-        st.caption(f"Net stock income: {format_currency(stock_income)}")
+            # Calculate RSU monthly income (USD) from RSU blocks
+            rsu_monthly_usd = 0.0
+            if stock_settings.get("rsu_enabled", False):
+                rsu_blocks = stock_settings.get("rsu_blocks", [])
+                stock_price = stock_settings.get("stock_start_price", 40.0)
 
-        # Expenses
-        st.subheader("💸 Expenses")
-        monthly_expenses = currency_input(
-            "Monthly Expenses", 1000.0, "monthly_expenses"
-        )
+                for block in rsu_blocks:
+                    if block.get("hidden", False):
+                        continue
+                    total_stocks = block.get("total_stocks", 0)
+                    vest_months = block.get("vest_months", 48)
+                    if vest_months > 0:
+                        # Quarterly vesting = stocks per quarter / 3 months
+                        stocks_per_month = total_stocks / vest_months / 2
+                        # Value in USD (before tax, fees, etc.)
+                        rsu_monthly_usd += stocks_per_month * stock_price
+
+            # Calculate ESPP monthly contribution value (EUR)
+            espp_monthly_eur = 0.0
+            if stock_settings.get("espp_enabled", False):
+                espp_gross = stock_settings.get("espp_gross_income", 0.0)
+                espp_contrib_pct = stock_settings.get("espp_contribution", 0.0) / 100
+                espp_discount = stock_settings.get("espp_discount", 15.0) / 100
+                # Monthly contribution + discount benefit
+                monthly_contrib = espp_gross * espp_contrib_pct
+                # Approximate monthly value including discount benefit
+                espp_monthly_eur = monthly_contrib * (1 + espp_discount)
+
+            # Always update values (even if 0 when disabled)
+            st.session_state["stock_income_usd"] = format_number(rsu_monthly_usd)
+            if "stock_income_usd_input" in st.session_state:
+                del st.session_state["stock_income_usd_input"]
+            st.session_state["espp_income_eur"] = format_number(espp_monthly_eur)
+            if "espp_income_eur_input" in st.session_state:
+                del st.session_state["espp_income_eur_input"]
+
+            st.rerun()
 
         # Savings & Investments
         st.subheader("💼 Savings & Investments")
-        initial_bank_balance = currency_input(
-            "Initial Bank Balance", 50000.0, "initial_bank_balance"
-        )
-        initial_stock_wealth = currency_input(
-            "Initial Stock Portfolio", 20000.0, "initial_stock_wealth"
-        )
+        col1, col2 = st.columns(2)
+        with col1:
+            initial_bank_balance = currency_input(
+                "Initial Bank Balance", 50000.0, "initial_bank_balance"
+            )
+        with col2:
+            initial_stock_wealth = currency_input(
+                "Initial Stock Portfolio", 20000.0, "initial_stock_wealth"
+            )
         col1, col2 = st.columns(2)
         with col1:
             bank_return = st.number_input(
@@ -465,39 +570,141 @@ def main() -> None:
             help="Fraction of monthly savings kept in bank (rest goes to stocks)",
             key="bank_reserve_ratio",
         )
-        financial_buffer = currency_input(
-            "Financial Buffer (Min Bank Reserve)", 10000.0, "financial_buffer"
+
+        # Sell stocks checkbox and selling parameters
+        sell_stocks_monthly = st.checkbox(
+            "Sell stocks via schedule",
+            value=False,
+            key="sell_stocks_monthly",
+            help="If checked, stock income is sold and converted to cash. "
+                 "Otherwise kept in stock portfolio.",
         )
+
+        # Selling parameters (only relevant when selling)
+        sells_per_year_options = {
+            "1/12 (biennial)": 1/12,
+            "1/6": 1/6,
+            "1/4 (every 4y)": 1/4,
+            "1/3": 1/3,
+            "1/2 (biannual)": 1/2,
+            "1": 1.0,
+            "2": 2.0,
+            "3": 3.0,
+            "4 (quarterly)": 4.0,
+            "6": 6.0,
+            "12 (monthly)": 12.0,
+        }
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            usd_eur_rate = st.number_input(
+                "USD/EUR",
+                min_value=0.01,
+                step=0.01,
+                format="%.4f",
+                key="usd_eur_rate",
+                disabled=not sell_stocks_monthly,
+            )
+        with col2:
+            selling_fee = st.number_input(
+                "Selling Fee (€)",
+                min_value=0.0,
+                step=1.0,
+                key="transaction_fee",
+                disabled=not sell_stocks_monthly,
+            )
+        with col3:
+            sells_per_year_label = st.selectbox(
+                "Sells/Year",
+                options=list(sells_per_year_options.keys()),
+                index=10,  # Default to "12 (monthly)"
+                key="sells_per_year_label",
+                disabled=not sell_stocks_monthly,
+            )
+        sells_per_year = sells_per_year_options[sells_per_year_label]
+
+        # Calculate stock income based on selling frequency
+        if sell_stocks_monthly and sells_per_year > 0:
+            # Fee is applied per sell, distributed across months
+            # e.g., 4 sells/year = fee applied 4 times/year = fee/3 per month on average
+            monthly_fee_equivalent = (selling_fee * sells_per_year) / 12
+            rsu_income = convert_usd_to_eur(
+                stock_income_usd, usd_eur_rate, monthly_fee_equivalent
+            )
+        else:
+            # No selling, no fee
+            rsu_income = stock_income_usd * usd_eur_rate
+
+        # Total stock income = RSU (converted) + ESPP (already in EUR)
+        stock_income = rsu_income + espp_income_eur
+        # reinvest_dividends is the inverse of sell_stocks_monthly
+        reinvest_dividends = not sell_stocks_monthly
+        st.caption(f"Net stock income: {format_currency(stock_income)}")
+
+        st.divider()
+
+        # Assumptions (must come before Property & Mortgage for interest_rate/loan_term)
+        st.subheader("📈 Assumptions")
+        col1, col2 = st.columns(2)
+        with col1:
+            interest_rate = st.number_input(
+                "Annual Interest Rate (%)",
+                min_value=0.1,
+                step=0.1,
+                key="interest_rate",
+            )
+        with col2:
+            loan_term = st.number_input(
+                "Loan Term (years)",
+                min_value=1,
+                max_value=40,
+                step=1,
+                key="loan_term",
+            )
+        col1, col2 = st.columns(2)
+        with col1:
+            home_appreciation = st.number_input(
+                "Annual Home Appreciation (%)",
+                min_value=-10.0,
+                step=0.5,
+                key="home_appreciation",
+            )
+        with col2:
+            projection_years = st.number_input(
+                "Projection Years",
+                min_value=1,
+                max_value=50,
+                step=1,
+                key="projection_years",
+            )
+
+        st.divider()
 
         # Property & Mortgage
         st.subheader("🏡 Property & Mortgage")
-        property_value = currency_input(
-            "Property Value", 800000.0, "property_value"
-        )
-        down_payment = currency_input("Down Payment", 200000.0, "down_payment")
-        interest_rate = st.number_input(
-            "Annual Interest Rate (%)",
-            min_value=0.1,
-            step=0.1,
-            key="interest_rate",
-        )
-        loan_term = st.number_input(
-            "Loan Term (years)",
-            min_value=1,
-            max_value=40,
-            step=1,
-            key="loan_term",
+        col1, col2 = st.columns(2)
+        with col1:
+            property_value = currency_input(
+                "Property Value", 800000.0, "property_value"
+            )
+        with col2:
+            down_payment = currency_input("Down Payment", 200000.0, "down_payment")
+        financial_buffer = currency_input(
+            "Financial Buffer (Min Bank Reserve)", 10000.0, "financial_buffer"
         )
 
         # Calculate and display monthly mortgage payment
         calc_monthly_payment = calculate_mortgage(
             property_value, interest_rate, loan_term, down_payment
         )
+        calc_monthly_capacity = income1 + income2 - monthly_expenses
 
         # Initialize monthly payment in session state if needed
         if "monthly_payment" not in st.session_state:
             st.session_state["monthly_payment"] = format_number(calc_monthly_payment)
-
+        if "monmonthly_capacity_payment" not in st.session_state:
+            st.session_state["monthly_capacity"] = format_number(calc_monthly_capacity)
+        if "stock_income" not in st.session_state:
+            st.session_state["monthly_capacity"] = format_number(calc_monthly_capacity)
         # Check if property/mortgage inputs changed - update payment display
         if "last_calc_payment" not in st.session_state:
             st.session_state["last_calc_payment"] = calc_monthly_payment
@@ -506,13 +713,26 @@ def main() -> None:
             st.session_state["last_calc_payment"] = calc_monthly_payment
 
         # Monthly payment input
-        st.markdown("**Monthly Mortgage Payment**")
         payment_text = st.text_input(
-            "Monthly Payment",
+            "Monthly Mortgage Payment Due [€]",
             value=st.session_state["monthly_payment"],
             key="monthly_payment_input",
             help="Edit to adjust property value to meet this payment",
         )
+        monthly_capacity_text = st.text_input(
+            "Monthly Money Capacity [€]",
+            value=st.session_state["monthly_capacity"],
+            key="monthly_capacity_input",
+            help="The spare money from calculating income + stocks converted to money - expenses. Must be greater than monthly payment.",
+        )
+        monthly_stock_text = st.text_input(
+            "Monthly Stock Capacity [€]",
+            value=stock_income,
+            key="monthly_stock_capacity_input",
+            help="The spare stocks not converted into money yet",
+        )
+
+
         edited_payment = parse_formatted_number(payment_text, calc_monthly_payment)
 
         # If user edited the payment, calculate new property value
@@ -525,22 +745,6 @@ def main() -> None:
             st.session_state["monthly_payment"] = format_number(edited_payment)
             st.session_state["last_calc_payment"] = edited_payment
             st.rerun()
-
-        # Assumptions
-        st.subheader("📈 Assumptions")
-        home_appreciation = st.number_input(
-            "Annual Home Appreciation (%)",
-            min_value=-10.0,
-            step=0.5,
-            key="home_appreciation",
-        )
-        projection_years = st.number_input(
-            "Projection Years",
-            min_value=1,
-            max_value=50,
-            step=1,
-            key="projection_years",
-        )
 
     # --------------------------------------------------------------- Calculations
     monthly_payment = calculate_mortgage(

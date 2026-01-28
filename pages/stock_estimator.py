@@ -13,14 +13,72 @@ from src.formatting import format_currency, format_number
 
 SETTINGS_DIR = os.path.join("saved_settings", "stock_estimator")
 
+# Default values for initialization
+STOCK_ESTIMATOR_DEFAULTS = {
+    "stock_start_price": 40.0,
+    "usd_to_eur": 0.92,
+    "yearly_growth_rate": 0.0,
+    "projection_years": 5,
+    "projection_extra_months": 0,
+    "rsu_enabled": True,
+    "rsu_transaction_fee": 9.99,
+    "rsu_selling_loss": 0.05,
+    "rsu_blocks": [
+        {
+            "total_stocks": 500,
+            "start_offset": 2,
+            "vest_months": 48,
+            "delay_months": 12,
+            "hidden": False,
+        }
+    ],
+    "espp_enabled": True,
+    "espp_gross_income": 5000.0,
+    "espp_contribution": 10.0,
+    "espp_start_offset": 0,
+    "espp_vesting_interval": 6,
+    "espp_discount": 15.0,
+    "self_enabled": True,
+    "self_net_income": 3500.0,
+    "self_investment_type": "Fixed Amount",
+    "self_investment_pct": 10.0,
+    "self_investment_amt": 350.0,
+}
 
-def get_saved_presets() -> list[str]:
-    """Get list of saved preset files.
+
+def init_session_state() -> None:
+    """Initialize session state from defaults.json or hardcoded defaults.
+
+    Only runs once on first app initialization.
+    """
+    if "_stock_estimator_initialized" in st.session_state:
+        return
+
+    # Try to load from defaults.json first
+    defaults_path = os.path.join(SETTINGS_DIR, "defaults.json")
+    if os.path.exists(defaults_path):
+        with open(defaults_path, "r", encoding="utf-8") as f:
+            saved_defaults = json.load(f)
+        # Use saved defaults, falling back to hardcoded for missing keys
+        for key, default_value in STOCK_ESTIMATOR_DEFAULTS.items():
+            if key not in st.session_state:
+                st.session_state[key] = saved_defaults.get(key, default_value)
+    else:
+        # Use hardcoded defaults
+        for key, default_value in STOCK_ESTIMATOR_DEFAULTS.items():
+            if key not in st.session_state:
+                st.session_state[key] = default_value
+
+    st.session_state["_stock_estimator_initialized"] = True
+
+
+def get_saved_settings() -> list[str]:
+    """Get list of saved settings files.
 
     Returns
     -------
     list[str]
-        List of saved preset names (without .json extension).
+        List of saved settings names (without .json extension).
     """
     if not os.path.exists(SETTINGS_DIR):
         return []
@@ -28,22 +86,22 @@ def get_saved_presets() -> list[str]:
     return sorted(files)
 
 
-def save_current_preset(preset_name: str) -> None:
+def save_current_settings(settings_name: str) -> None:
     """Save current settings to a JSON file.
 
     Parameters
     ----------
-    preset_name : str
-        Name for the preset file.
+    settings_name : str
+        Name for the settings file.
     """
-    name = (preset_name or "").strip()
+    name = (settings_name or "").strip()
     if not name:
-        st.error("Please enter a preset name.")
+        st.error("Please enter a settings name.")
         return
 
     os.makedirs(SETTINGS_DIR, exist_ok=True)
 
-    preset = {
+    settings = {
         "stock_start_price": st.session_state.get("stock_start_price", 40.0),
         "usd_to_eur": st.session_state.get("usd_to_eur", 0.92),
         "yearly_growth_rate": st.session_state.get("yearly_growth_rate", 0.0),
@@ -68,34 +126,50 @@ def save_current_preset(preset_name: str) -> None:
 
     filepath = os.path.join(SETTINGS_DIR, f"{name}.json")
     with open(filepath, "w", encoding="utf-8") as f:
-        json.dump(preset, f, indent=2)
+        json.dump(settings, f, indent=2)
 
 
-def load_preset(preset_name: str) -> None:
+def load_settings(settings_name: str) -> None:
     """Load settings from a JSON file.
 
     Parameters
     ----------
-    preset_name : str
-        Name of the preset file to load.
+    settings_name : str
+        Name of the settings file to load.
     """
-    if not preset_name or preset_name == "(no presets saved)":
+    if not settings_name or settings_name == "(no settings saved)":
         return
 
-    filepath = os.path.join(SETTINGS_DIR, f"{preset_name}.json")
+    filepath = os.path.join(SETTINGS_DIR, f"{settings_name}.json")
     if not os.path.exists(filepath):
         return
 
     with open(filepath, "r", encoding="utf-8") as f:
-        preset = json.load(f)
+        saved_settings = json.load(f)
 
     # Load all settings into session state
-    for key, value in preset.items():
+    for key, value in saved_settings.items():
         if value is not None:
             st.session_state[key] = value
 
-    # Mark that preset was loaded - rerun happens automatically after callback
-    st.session_state["_preset_loaded"] = True
+    # Mark that settings were loaded - rerun happens automatically after callback
+    st.session_state["_settings_loaded"] = True
+
+
+def delete_settings(settings_name: str) -> None:
+    """Delete a saved settings file.
+
+    Parameters
+    ----------
+    settings_name : str
+        Name of the settings file to delete.
+    """
+    if not settings_name or settings_name == "(no settings saved)":
+        return
+
+    filepath = os.path.join(SETTINGS_DIR, f"{settings_name}.json")
+    if os.path.exists(filepath):
+        os.remove(filepath)
 
 
 def get_stock_price_at_month(
@@ -126,27 +200,31 @@ def get_stock_price_at_month(
 def calculate_rsu_vesting(
     total_stocks: int,
     vesting_period_months: int,
-    num_vesting_intervals: int,
     stock_prices: list[float],
     start_offset: int = 0,
+    delay_months: int = 0,
     usd_to_eur: float = 1.0,
     transaction_fee_usd: float = 9.99,
     selling_loss_usd: float = 0.05,
 ) -> pd.DataFrame:
-    """Calculate RSU vesting schedule.
+    """Calculate RSU vesting schedule with quarterly payouts.
+
+    RSU payouts happen every 3 months (quarterly). If there is a delay period,
+    the first payout includes all accumulated quarterly intervals.
 
     Parameters
     ----------
     total_stocks : int
         Total number of RSU stocks granted.
     vesting_period_months : int
-        Total vesting period in months.
-    num_vesting_intervals : int
-        Number of vesting events.
+        Total vesting period in months (must be divisible by 3).
     stock_prices : list[float]
         Stock prices for each month (in USD).
     start_offset : int
         Number of months from now when RSU grant starts.
+    delay_months : int
+        Delay before first payout (e.g., 12 for cliff vesting).
+        First payout includes all accumulated quarters.
     usd_to_eur : float
         USD to EUR conversion rate.
     transaction_fee_usd : float
@@ -175,61 +253,93 @@ def calculate_rsu_vesting(
         "RSU_Cumulative_Rest": [0.0] * months,
     }
 
-    if num_vesting_intervals <= 0 or vesting_period_months <= 0:
+    if vesting_period_months <= 0:
         return pd.DataFrame(data)
 
-    # Calculate stocks per vest with proper distribution of remainder
-    # E.g., 5 stocks over 4 intervals: first gets 2, rest get 1 each
-    base_stocks = total_stocks // num_vesting_intervals
-    remainder = total_stocks % num_vesting_intervals
-    interval_months = vesting_period_months / num_vesting_intervals
+    # Quarterly payouts (every 3 months)
+    total_quarters = vesting_period_months // 3
+    if total_quarters <= 0:
+        return pd.DataFrame(data)
+
+    # Stocks per quarter with remainder distribution
+    base_stocks_per_quarter = total_stocks // total_quarters
+    remainder = total_stocks % total_quarters
+
+    # Calculate delayed quarters (accumulated in first payout)
+    delayed_quarters = delay_months // 3
 
     cumulative_stocks = 0.0
     cumulative_rest = 0.0
 
-    for i in range(num_vesting_intervals):
-        # Vest at end of each interval, 0-indexed
-        # E.g., interval 1 of 4 over 48 months = month 12 = index 11
-        vest_month_1indexed = start_offset + int((i + 1) * interval_months)
-        vest_index = vest_month_1indexed - 1
-        if 0 <= vest_index < months:
-            # Distribute remainder to first intervals
-            vested = base_stocks + (1 if i < remainder else 0)
-            stock_price_usd = stock_prices[vest_index]
+    def process_vesting(vest_index: int, vested: int):
+        """Process a single vesting event."""
+        if vested <= 0 or vest_index < 0 or vest_index >= months:
+            return
 
-            # Tax due = vested * stock_price / 2
-            tax_due_usd = vested * stock_price_usd / 2
+        stock_price_usd = stock_prices[vest_index]
 
-            # Sell half + 1 for taxes (e.g., 35->18 sold, 36->19 sold)
-            # Odd: ceil(35/2) = 18, Even: 36/2 + 1 = 19
-            stocks_sold = (vested // 2) + 1
-            stocks_kept = vested - stocks_sold
+        # Tax due = vested * stock_price / 2
+        tax_due_usd = vested * stock_price_usd / 2
 
-            # Sale proceeds at E*Trade price (stock_price - selling_loss)
-            etrade_price_usd = stock_price_usd - selling_loss_usd
-            sale_proceeds_usd = stocks_sold * etrade_price_usd
+        # Sell half + 1 for taxes (e.g., 35->18 sold, 36->19 sold)
+        stocks_sold = (vested // 2) + 1
+        stocks_kept = vested - stocks_sold
 
-            # Rest amount = sale proceeds - tax due - transaction fee
-            rest_amount_usd = sale_proceeds_usd - tax_due_usd - transaction_fee_usd
+        # Sale proceeds at E*Trade price (stock_price - selling_loss)
+        etrade_price_usd = stock_price_usd - selling_loss_usd
+        sale_proceeds_usd = stocks_sold * etrade_price_usd
 
-            # Convert to EUR
-            stock_price_eur = stock_price_usd * usd_to_eur
-            tax_due_eur = tax_due_usd * usd_to_eur
-            sale_proceeds_eur = sale_proceeds_usd * usd_to_eur
-            transaction_fee_eur = transaction_fee_usd * usd_to_eur
-            rest_amount_eur = rest_amount_usd * usd_to_eur
+        # Rest amount = sale proceeds - tax due - transaction fee
+        rest_amount_usd = sale_proceeds_usd - tax_due_usd - transaction_fee_usd
 
-            # Value of kept stocks at real market price
-            value_eur = stocks_kept * stock_price_eur
+        # Convert to EUR
+        stock_price_eur = stock_price_usd * usd_to_eur
+        tax_due_eur = tax_due_usd * usd_to_eur
+        sale_proceeds_eur = sale_proceeds_usd * usd_to_eur
+        transaction_fee_eur = transaction_fee_usd * usd_to_eur
+        rest_amount_eur = rest_amount_usd * usd_to_eur
 
-            data["RSU_Stocks_Vested"][vest_index] = vested
-            data["RSU_Stocks_Sold"][vest_index] = stocks_sold
-            data["RSU_Stocks_Kept"][vest_index] = stocks_kept
-            data["RSU_Tax_Due"][vest_index] = tax_due_eur
-            data["RSU_Sale_Proceeds"][vest_index] = sale_proceeds_eur
-            data["RSU_Transaction_Fee"][vest_index] = transaction_fee_eur
-            data["RSU_Rest_Amount"][vest_index] = rest_amount_eur
-            data["RSU_Value"][vest_index] = max(0, value_eur)
+        # Value of kept stocks at real market price
+        value_eur = stocks_kept * stock_price_eur
+
+        data["RSU_Stocks_Vested"][vest_index] += vested
+        data["RSU_Stocks_Sold"][vest_index] += stocks_sold
+        data["RSU_Stocks_Kept"][vest_index] += stocks_kept
+        data["RSU_Tax_Due"][vest_index] += tax_due_eur
+        data["RSU_Sale_Proceeds"][vest_index] += sale_proceeds_eur
+        data["RSU_Transaction_Fee"][vest_index] += transaction_fee_eur
+        data["RSU_Rest_Amount"][vest_index] += rest_amount_eur
+        data["RSU_Value"][vest_index] = max(0, data["RSU_Value"][vest_index] + value_eur)
+
+    # Process each quarter
+    stocks_distributed = 0
+    for q in range(total_quarters):
+        # Calculate stocks for this quarter (distribute remainder to first quarters)
+        quarter_stocks = base_stocks_per_quarter + (1 if q < remainder else 0)
+        stocks_distributed += quarter_stocks
+
+        # Quarter month (1-indexed): q=0 -> month 3, q=1 -> month 6, etc.
+        quarter_month = (q + 1) * 3
+
+        if quarter_month <= delay_months:
+            # This quarter is within delay period - will be paid at first payout
+            continue
+
+        # Determine payout month
+        if q == delayed_quarters and delayed_quarters > 0:
+            # First payout after delay - includes all delayed quarters
+            payout_month = start_offset + delay_months + 3
+            # Sum up all delayed quarters' stocks
+            delayed_stocks = 0
+            for dq in range(delayed_quarters):
+                delayed_stocks += base_stocks_per_quarter + (1 if dq < remainder else 0)
+            vested = delayed_stocks + quarter_stocks
+        else:
+            payout_month = start_offset + quarter_month
+            vested = quarter_stocks
+
+        vest_index = payout_month - 1
+        process_vesting(vest_index, vested)
 
     # Calculate cumulative values
     for month in range(months):
@@ -376,55 +486,67 @@ def main() -> None:
         page_icon="📈",
         layout="wide",
     )
+
+    # Make dividers more prominent
+    st.markdown(
+        """
+        <style>
+        [data-testid="stVerticalBlockBorderWrapper"] hr,
+        [data-testid="stSidebar"] hr,
+        div[data-testid="stHorizontalBlock"] hr,
+        .stDivider hr,
+        hr {
+            border: none !important;
+            border-top: 3px solid #888 !important;
+            margin: 1.5em 0 !important;
+            height: 0 !important;
+            background: transparent !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     st.title("📈 Stock Estimator")
+
+    # Initialize session state from defaults (only on first app init)
+    init_session_state()
 
     # Sidebar inputs
     with st.sidebar:
-        st.header("Stock Settings")
-
-        # Preset management
-        st.subheader("💾 Presets")
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            preset_name = st.text_input("Preset Name", key="preset_name")
-        with col2:
-            st.button(
-                "Save",
-                on_click=save_current_preset,
-                args=(preset_name,),
-                width="stretch",
-            )
-
-        preset_options = get_saved_presets()
-        has_presets = len(preset_options) > 0
-        select_options = preset_options if has_presets else ["(no presets saved)"]
-        selected_preset = st.selectbox(
-            "Saved Presets",
+        st.subheader("💾 Settings")
+        settings_options = get_saved_settings()
+        has_settings = len(settings_options) > 0
+        select_options = settings_options if has_settings else ["(no settings saved)"]
+        selected_settings = st.selectbox(
+            "Load Settings",
             options=select_options,
             index=0,
-            key="selected_preset",
+            key="selected_settings",
         )
-        st.button(
-            "Load",
-            on_click=load_preset,
-            args=(selected_preset,),
-            disabled=not has_presets,
-            width="stretch",
-        )
+        col_load, col_delete = st.columns(2)
+        with col_load:
+            st.button(
+                "Load",
+                on_click=load_settings,
+                args=(selected_settings,),
+                disabled=not has_settings,
+                use_container_width=True,
+            )
+        with col_delete:
+            st.button(
+                "Delete",
+                on_click=delete_settings,
+                args=(selected_settings,),
+                disabled=not has_settings,
+                use_container_width=True,
+            )
+
+        settings_name = st.text_input("Save Current Settings As", key="settings_name")
+        if st.button("Save", key="save_settings_btn", use_container_width=True):
+            save_current_settings(settings_name)
 
         st.divider()
-
-        # Initialize defaults if not in session state
-        if "stock_start_price" not in st.session_state:
-            st.session_state["stock_start_price"] = 40.0
-        if "usd_to_eur" not in st.session_state:
-            st.session_state["usd_to_eur"] = 0.92
-        if "yearly_growth_rate" not in st.session_state:
-            st.session_state["yearly_growth_rate"] = 0.0
-        if "projection_years" not in st.session_state:
-            st.session_state["projection_years"] = 5
-        if "projection_extra_months" not in st.session_state:
-            st.session_state["projection_extra_months"] = 0
 
         st.subheader("📊 Stock Price")
         c1, c2 = st.columns(2)
@@ -481,27 +603,15 @@ def main() -> None:
         st.divider()
 
         # RSU Settings - Multiple blocks
+        # Use value from session state to persist across page changes
         if "rsu_enabled" not in st.session_state:
             st.session_state["rsu_enabled"] = True
-        # Initialize RSU defaults if not in session state (outside enabled check)
-        if "rsu_transaction_fee" not in st.session_state:
-            st.session_state["rsu_transaction_fee"] = 9.99
-        if "rsu_selling_loss" not in st.session_state:
-            st.session_state["rsu_selling_loss"] = 0.05
-        if "rsu_blocks" not in st.session_state:
-            st.session_state["rsu_blocks"] = [
-                {
-                    "total_stocks": 500,
-                    "start_offset": 2,
-                    "vest_months": 48,
-                    "intervals": 4,
-                    "hidden": False,
-                }
-            ]
-
         rsu_enabled = st.checkbox(
-            "🎁 RSU (Restricted Stock Units)", key="rsu_enabled"
+            "🎁 RSU (Restricted Stock Units)",
+            value=st.session_state["rsu_enabled"],
+            key="rsu_enabled_cb",
         )
+        st.session_state["rsu_enabled"] = rsu_enabled
         rsu_blocks_data = []
         rsu_transaction_fee = 9.99
         rsu_selling_loss = 0.05
@@ -510,7 +620,14 @@ def main() -> None:
             # RSU calculation info
             with st.expander("ℹ️ RSU Calculation Details"):
                 st.markdown(
-                    "**How RSU vesting is calculated:**\n\n"
+                    "**Vesting Schedule:**\n"
+                    "- Payouts happen **quarterly** (every 3 months)\n"
+                    "- If a **delay** (cliff) is set, the first payout includes all "
+                    "accumulated quarters\n"
+                    "- Example with **start=4, delay=0**: 480 stocks over 48m → first payout at month 5 "
+                    "(4+0+1) with 30 stocks, then 15 more quarterly payouts of 30 stocks each\n"
+                    "- Example with **start=2, delay=12**: 480 stocks over 48m → first payout at month 15 "
+                    "(2+12+1) with 120 stocks (4 quarters), then 12 quarterly payouts of 30 stocks each\n\n"
                     "**Abbreviations:**\n"
                     "- V ... number of vested stocks\n"
                     "- P ... stock price (\\$)\n"
@@ -591,7 +708,14 @@ def main() -> None:
                         if st.button("🗑️", key=f"rsu_delete_{i}", help="Delete"):
                             blocks_to_remove.append(i)
 
-                    # All fields in one row: Stocks, Start, Vest, Intervals
+                    # All fields in one row: Stocks, Start, Vest, Delay
+                    # Migrate old blocks: convert intervals to delay_months
+                    if "intervals" in block and "delay_months" not in block:
+                        block["delay_months"] = 12  # Default cliff
+                        del block["intervals"]
+                    if "delay_months" not in block:
+                        block["delay_months"] = 0
+
                     if is_hidden:
                         # Show greyed out values
                         c1, c2, c3, c4 = st.columns(4)
@@ -610,13 +734,13 @@ def main() -> None:
                         with c3:
                             st.markdown(
                                 f"<span style='color: #999;'>"
-                                f"Vest: {block['vest_months']}M</span>",
+                                f"Vest: {block['vest_months']}m</span>",
                                 unsafe_allow_html=True,
                             )
                         with c4:
                             st.markdown(
                                 f"<span style='color: #999;'>"
-                                f"Intervals: {block['intervals']}</span>",
+                                f"Delay: {block['delay_months']}m</span>",
                                 unsafe_allow_html=True,
                             )
                     else:
@@ -639,30 +763,32 @@ def main() -> None:
                             )
                         with c3:
                             block["vest_months"] = st.number_input(
-                                "Vesting period (M)",
-                                min_value=1,
+                                "Vesting period (m)",
+                                min_value=3,
                                 value=block["vest_months"],
-                                step=1,
+                                step=3,
                                 key=f"rsu_vest_m_{i}",
+                                help="Total vesting period in months (quarterly payouts)",
                             )
                         with c4:
-                            block["intervals"] = st.number_input(
-                                "Intervals",
-                                min_value=1,
-                                max_value=48,
-                                value=block["intervals"],
-                                step=1,
-                                key=f"rsu_intervals_{i}",
+                            max_delay = max(0, block["vest_months"] - 3)
+                            block["delay_months"] = st.number_input(
+                                "Delay (m)",
+                                min_value=0,
+                                max_value=max_delay,
+                                value=min(block["delay_months"], max_delay),
+                                step=3,
+                                key=f"rsu_delay_{i}",
+                                help="Cliff period before first payout (first payout includes accumulated quarters)",
                             )
 
                     # Only add to calculation if not hidden
                     if not is_hidden:
-                        vesting_period = block["vest_months"]
                         rsu_blocks_data.append({
                             "total_stocks": block["total_stocks"],
                             "start_offset": block["start_offset"],
-                            "vesting_period": vesting_period,
-                            "intervals": block["intervals"],
+                            "vesting_period": block["vest_months"],
+                            "delay_months": block["delay_months"],
                             "usd_to_eur": usd_to_eur,
                             "transaction_fee": rsu_transaction_fee,
                             "selling_loss": rsu_selling_loss,
@@ -688,30 +814,22 @@ def main() -> None:
                     "total_stocks": 1000,
                     "start_offset": 0,
                     "vest_months": 48,
-                    "intervals": 4,
+                    "delay_months": 12,
                     "hidden": False,
                 })
 
         st.divider()
 
         # ESPP Settings
+        # Use value from session state to persist across page changes
         if "espp_enabled" not in st.session_state:
             st.session_state["espp_enabled"] = True
-        # Initialize ESPP defaults if not in session state (outside enabled check)
-        if "espp_gross_income" not in st.session_state:
-            st.session_state["espp_gross_income"] = 4000.0
-        if "espp_contribution" not in st.session_state:
-            st.session_state["espp_contribution"] = 15.0
-        if "espp_start_offset" not in st.session_state:
-            st.session_state["espp_start_offset"] = 8
-        if "espp_vesting_interval" not in st.session_state:
-            st.session_state["espp_vesting_interval"] = 6
-        if "espp_discount" not in st.session_state:
-            st.session_state["espp_discount"] = 15.0
-
         espp_enabled = st.checkbox(
-            "💼 ESPP (Employee Stock Purchase Plan)", key="espp_enabled"
+            "💼 ESPP (Employee Stock Purchase Plan)",
+            value=st.session_state["espp_enabled"],
+            key="espp_enabled_cb",
         )
+        st.session_state["espp_enabled"] = espp_enabled
 
         if espp_enabled:
             c1, c2 = st.columns(2)
@@ -778,19 +896,15 @@ def main() -> None:
         st.divider()
 
         # Self Buying Settings
+        # Use value from session state to persist across page changes
         if "self_enabled" not in st.session_state:
             st.session_state["self_enabled"] = True
-        # Initialize Self Buying defaults if not in session state (outside enabled check)
-        if "self_net_income" not in st.session_state:
-            st.session_state["self_net_income"] = 3500.0
-        if "self_investment_pct" not in st.session_state:
-            st.session_state["self_investment_pct"] = 10.0
-        if "self_investment_amt" not in st.session_state:
-            st.session_state["self_investment_amt"] = 350.0
-
         self_enabled = st.checkbox(
-            "🛒 Self Buying", key="self_enabled"
+            "🛒 Self Buying",
+            value=st.session_state["self_enabled"],
+            key="self_enabled_cb",
         )
+        st.session_state["self_enabled"] = self_enabled
 
         if self_enabled:
             self_net_income = st.number_input(
@@ -846,9 +960,9 @@ def main() -> None:
         block_df = calculate_rsu_vesting(
             block_data["total_stocks"],
             block_data["vesting_period"],
-            block_data["intervals"],
             stock_prices,
             block_data["start_offset"],
+            block_data["delay_months"],
             block_data["usd_to_eur"],
             block_data["transaction_fee"],
             block_data["selling_loss"],
@@ -1034,10 +1148,10 @@ def main() -> None:
                 )
 
         for idx, block_data in enumerate(rsu_blocks_data):
+            delay_info = f", {block_data['delay_months']}m delay" if block_data['delay_months'] > 0 else ""
             st.markdown(f"**Plan {idx + 1}:** {block_data['total_stocks']:,} stocks, "
                         f"start month {block_data['start_offset']}, "
-                        f"{block_data['vesting_period']}m vesting, "
-                        f"{block_data['intervals']} intervals")
+                        f"{block_data['vesting_period']}m vesting{delay_info}")
 
         # RSU vesting events
         vest_events = rsu_df[rsu_df["RSU_Stocks_Vested"] > 0][
