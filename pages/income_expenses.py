@@ -368,6 +368,36 @@ def toggle_calculation_mode() -> None:
     clear_item_widget_keys()
 
 
+def load_settings_and_update(setting_name: str) -> None:
+    """Load settings and update current setting tracking."""
+    load_settings(setting_name)
+    st.session_state["_income_expenses_current_setting"] = setting_name
+
+
+def delete_settings_and_update(setting_name: str) -> None:
+    """Delete settings and update current setting tracking."""
+    delete_settings(setting_name)
+    # If we deleted the current setting, reset to first available
+    if setting_name == st.session_state.get("_income_expenses_current_setting"):
+        remaining_settings = get_saved_settings()
+        if remaining_settings:
+            st.session_state["_income_expenses_current_setting"] = remaining_settings[0]
+
+
+def load_settings_callback() -> None:
+    """Callback function for load button."""
+    selected = st.session_state.get("selected_setting", "")
+    if selected:
+        load_settings_and_update(selected)
+
+
+def delete_settings_callback() -> None:
+    """Callback function for delete button."""
+    selected = st.session_state.get("selected_setting", "")
+    if selected:
+        delete_settings_and_update(selected)
+
+
 def main() -> None:
     """Run the Income & Expenses page."""
     st.set_page_config(
@@ -399,6 +429,17 @@ def main() -> None:
     st.title("💰 Income & Expenses Tracker")
 
     init_finance_state()
+    
+    # Auto-load first available setting on startup (only for this page)
+    if "_income_expenses_settings_loaded" not in st.session_state:
+        saved_settings = get_saved_settings()
+        if saved_settings:
+            # Store which setting we're loading
+            st.session_state["_income_expenses_current_setting"] = saved_settings[0]
+            load_settings(saved_settings[0])
+            st.session_state["_income_expenses_settings_loaded"] = True
+            # Trigger rerun to ensure widgets display loaded values
+            st.rerun()
 
     # Settings management in sidebar
     with st.sidebar:
@@ -407,20 +448,25 @@ def main() -> None:
         # Load settings dropdown
         saved_settings = get_saved_settings()
         if saved_settings:
+            # Get current setting from session state, default to first if not set
+            current_setting = st.session_state.get("_income_expenses_current_setting", saved_settings[0])
+            # Find index of current setting
+            default_index = 0
+            if current_setting in saved_settings:
+                default_index = saved_settings.index(current_setting)
+            
             selected_setting = st.selectbox(
                 "Load Settings",
-                options=[""] + saved_settings,
-                format_func=lambda x: "Select..." if x == "" else x,
+                options=saved_settings,
+                index=default_index,
                 key="selected_setting",
             )
             col1, col2 = st.columns(2)
             with col1:
-                if st.button("Load", disabled=not selected_setting):
-                    load_settings(selected_setting)
+                if st.button("Load", on_click=load_settings_callback):
                     st.rerun()
             with col2:
-                if st.button("Delete", disabled=not selected_setting):
-                    delete_settings(selected_setting)
+                if st.button("Delete", on_click=delete_settings_callback):
                     st.rerun()
         else:
             st.caption("No saved settings yet")

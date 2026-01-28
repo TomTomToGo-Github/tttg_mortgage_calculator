@@ -79,10 +79,16 @@ def currency_input(label: str, default: float, key: str) -> float:
     if key not in st.session_state:
         st.session_state[key] = format_number(default)
 
-    text_value = st.text_input(label, value=st.session_state[key], key=f"{key}_input")
+    # Get the current value from our session state
+    current_value = st.session_state[key]
+    
+    # Create the text input widget with the current value
+    input_key = f"{key}_input"
+    text_value = st.text_input(label, value=current_value, key=input_key)
     parsed = parse_formatted_number(text_value, default)
 
-    # Update session state with formatted value for consistency
+    # Update only the base key with formatted value for consistency
+    # Don't modify the widget's session state key to avoid StreamlitAPIException
     st.session_state[key] = format_number(parsed)
 
     return parsed
@@ -99,6 +105,8 @@ def zero_all_fields() -> None:
         del st.session_state["monthly_payment"]
     if "last_calc_payment" in st.session_state:
         del st.session_state["last_calc_payment"]
+    # Set flag to trigger widget updates
+    st.session_state["_fields_zeroed"] = True
 
 
 def reset_all_fields() -> None:
@@ -112,6 +120,8 @@ def reset_all_fields() -> None:
         del st.session_state["monthly_payment"]
     if "last_calc_payment" in st.session_state:
         del st.session_state["last_calc_payment"]
+    # Set flag to trigger widget updates
+    st.session_state["_fields_reset"] = True
 
 
 def init_session_state() -> None:
@@ -255,7 +265,6 @@ def load_preset(preset_name: str) -> None:
         value = preset.get(key)
         if value is not None:
             st.session_state[key] = value
-            st.session_state[f"{key}_input"] = value
 
     for key in number_keys:
         value = preset.get(key)
@@ -272,10 +281,6 @@ def load_preset(preset_name: str) -> None:
         del st.session_state[monthly_payment_key]
     if "last_calc_payment" in st.session_state:
         del st.session_state["last_calc_payment"]
-    if "monthly_payment_input" in st.session_state:
-        del st.session_state["monthly_payment_input"]
-
-    st.rerun()
 
 
 def delete_preset(preset_name: str) -> None:
@@ -292,6 +297,150 @@ def delete_preset(preset_name: str) -> None:
     filepath = os.path.join(SETTINGS_DIR, f"{preset_name}.json")
     if os.path.exists(filepath):
         os.remove(filepath)
+
+
+def load_preset_and_update(preset_name: str) -> None:
+    """Load preset and update current preset tracking."""
+    load_preset(preset_name)
+    st.session_state["_current_preset"] = preset_name
+
+
+def delete_preset_and_update(preset_name: str) -> None:
+    """Delete preset and update current preset tracking."""
+    delete_preset(preset_name)
+    # If we deleted the current preset, reset to first available
+    if preset_name == st.session_state.get("_current_preset"):
+        remaining_presets = get_saved_presets()
+        if remaining_presets:
+            st.session_state["_current_preset"] = remaining_presets[0]
+
+
+def load_preset_callback() -> None:
+    """Callback function for load button."""
+    selected = st.session_state.get("selected_preset", "(no presets saved)")
+    if selected != "(no presets saved)":
+        load_preset_and_update(selected)
+
+
+def delete_preset_callback() -> None:
+    """Callback function for delete button."""
+    selected = st.session_state.get("selected_preset", "(no presets saved)")
+    if selected != "(no presets saved)":
+        delete_preset_and_update(selected)
+
+
+def import_ie_callback() -> None:
+    """Callback function for importing from Income & Expenses."""
+    total_income = st.session_state.get("summary_monthly_income")
+    total_expenses = st.session_state.get("summary_monthly_expenses")
+
+    # If not in session state, load from defaults file
+    if total_income is None or total_expenses is None:
+        ie_settings_path = os.path.join(
+            "saved_settings", "income_expenses", "defaults.json"
+        )
+        if os.path.exists(ie_settings_path):
+            with open(ie_settings_path, "r", encoding="utf-8") as f:
+                ie_settings = json.load(f)
+
+            calc_mode = ie_settings.get("calc_mode", "separate")
+            raw_monthly_income = sum(
+                item["amount"]
+                for item in ie_settings.get("income_monthly_items", [])
+                if not item.get("hidden", False)
+            )
+            raw_monthly_expenses = sum(
+                item["amount"]
+                for item in ie_settings.get("expense_monthly_items", [])
+                if not item.get("hidden", False)
+            )
+            converted_yearly_income = sum(
+                item["amount"]
+                for item in ie_settings.get("income_monthly_items", [])
+                if "original_yearly" in item and not item.get("hidden", False)
+            )
+            converted_yearly_expenses = sum(
+                item["amount"]
+                for item in ie_settings.get("expense_monthly_items", [])
+                if "original_yearly" in item and not item.get("hidden", False)
+            )
+
+            if calc_mode == "monthly":
+                total_income = raw_monthly_income + converted_yearly_income
+                total_expenses = raw_monthly_expenses + converted_yearly_expenses
+            else:
+                total_income = raw_monthly_income
+                total_expenses = raw_monthly_expenses
+        else:
+            total_income = 0.0
+            total_expenses = 0.0
+
+    st.session_state["income1"] = format_number(total_income)
+    st.session_state["monthly_expenses"] = format_number(total_expenses)
+    # Set flag to trigger widget updates
+    st.session_state["_income_imported"] = True
+
+
+def import_stock_callback() -> None:
+    """Callback function for importing from Stock Estimator."""
+    # Import stock income from Stock Estimator
+    # First try session state, then fall back to defaults.json
+    stock_settings = {}
+
+    # Check if Stock Estimator has been initialized in session state
+    if "_stock_estimator_initialized" in st.session_state:
+        # Read from session state
+        stock_settings = {
+            "rsu_enabled": st.session_state.get("rsu_enabled", True),
+            "rsu_blocks": st.session_state.get("rsu_blocks", []),
+            "stock_start_price": st.session_state.get("stock_start_price", 40.0),
+            "espp_enabled": st.session_state.get("espp_enabled", True),
+            "espp_gross_income": st.session_state.get("espp_gross_income", 5000.0),
+            "espp_contribution": st.session_state.get("espp_contribution", 10.0),
+            "espp_discount": st.session_state.get("espp_discount", 15.0),
+        }
+    else:
+        # Fall back to defaults.json
+        stock_settings_path = os.path.join(
+            "saved_settings", "stock_estimator", "defaults.json"
+        )
+        if os.path.exists(stock_settings_path):
+            with open(stock_settings_path, "r", encoding="utf-8") as f:
+                stock_settings = json.load(f)
+
+    # Calculate RSU monthly income (USD) from RSU blocks
+    rsu_monthly_usd = 0.0
+    if stock_settings.get("rsu_enabled", False):
+        rsu_blocks = stock_settings.get("rsu_blocks", [])
+        stock_price = stock_settings.get("stock_start_price", 40.0)
+
+        for block in rsu_blocks:
+            if block.get("hidden", False):
+                continue
+            total_stocks = block.get("total_stocks", 0)
+            vest_months = block.get("vest_months", 48)
+            if vest_months > 0:
+                # Quarterly vesting = stocks per quarter / 3 months
+                stocks_per_month = total_stocks / vest_months / 2
+                # Value in USD (before tax, fees, etc.)
+                rsu_monthly_usd += stocks_per_month * stock_price
+
+    # Calculate ESPP monthly contribution value (EUR)
+    espp_monthly_eur = 0.0
+    if stock_settings.get("espp_enabled", False):
+        espp_gross = stock_settings.get("espp_gross_income", 0.0)
+        espp_contrib_pct = stock_settings.get("espp_contribution", 0.0) / 100
+        espp_discount = stock_settings.get("espp_discount", 15.0) / 100
+        # Monthly contribution + discount benefit
+        monthly_contrib = espp_gross * espp_contrib_pct
+        # Approximate monthly value including discount benefit
+        espp_monthly_eur = monthly_contrib * (1 + espp_discount)
+
+    # Always update values (even if 0 when disabled)
+    st.session_state["stock_income_usd"] = format_number(rsu_monthly_usd)
+    st.session_state["espp_income_eur"] = format_number(espp_monthly_eur)
+    # Set flag to trigger widget updates
+    st.session_state["_stock_imported"] = True
 
 
 def main() -> None:
@@ -326,6 +475,35 @@ def main() -> None:
 
     # Initialize session state for number inputs
     init_session_state()
+    
+    # Auto-load first available preset on startup (only for this page)
+    if "_wealth_calculator_settings_loaded" not in st.session_state:
+        preset_options = get_saved_presets()
+        if preset_options:
+            # Store which preset we're loading
+            st.session_state["_current_preset"] = preset_options[0]
+            load_preset(preset_options[0])
+            st.session_state["_wealth_calculator_settings_loaded"] = True
+            # Trigger rerun to ensure widgets display loaded values
+            st.rerun()
+    
+    # Check if any callback operations need to trigger widget updates
+    needs_rerun = False
+    if st.session_state.get("_income_imported", False):
+        st.session_state["_income_imported"] = False
+        needs_rerun = True
+    if st.session_state.get("_stock_imported", False):
+        st.session_state["_stock_imported"] = False
+        needs_rerun = True
+    if st.session_state.get("_fields_zeroed", False):
+        st.session_state["_fields_zeroed"] = False
+        needs_rerun = True
+    if st.session_state.get("_fields_reset", False):
+        st.session_state["_fields_reset"] = False
+        needs_rerun = True
+    
+    if needs_rerun:
+        st.rerun()
 
     # Check if buffer was breached in previous run (for styling)
     buffer_breach = st.session_state.get("buffer_breach", False)
@@ -341,26 +519,32 @@ def main() -> None:
         preset_options = get_saved_presets()
         has_presets = len(preset_options) > 0
         select_options = preset_options if has_presets else ["(no presets saved)"]
+        
+        # Get current preset from session state, default to first if not set
+        current_preset = st.session_state.get("_current_preset", preset_options[0] if preset_options else "(no presets saved)")
+        # Find index of current preset
+        default_index = 0
+        if current_preset in select_options:
+            default_index = select_options.index(current_preset)
+        
         selected_preset = st.selectbox(
             "Load Settings",
             options=select_options,
-            index=0,
+            index=default_index,
             key="selected_preset",
         )
         col_load, col_delete = st.columns(2)
         with col_load:
             st.button(
                 "Load",
-                on_click=load_preset,
-                args=(selected_preset,),
+                on_click=load_preset_callback,
                 disabled=not has_presets,
                 use_container_width=True,
             )
         with col_delete:
             st.button(
                 "Delete",
-                on_click=delete_preset,
-                args=(selected_preset,),
+                on_click=delete_preset_callback,
                 disabled=not has_presets,
                 use_container_width=True,
             )
@@ -385,14 +569,16 @@ def main() -> None:
         st.subheader("💰 Monthly Income & Expenses")
         col1, col2 = st.columns(2)
         with col1:
-            import_ie_clicked = st.button(
+            st.button(
                 "📥 Import from Income & Expenses",
+                on_click=import_ie_callback,
                 use_container_width=True,
                 key="import_ie_btn",
             )
         with col2:
-            import_stock_clicked = st.button(
+            st.button(
                 "📥 Import from Stock Estimator",
+                on_click=import_stock_callback,
                 use_container_width=True,
                 key="import_stock_btn",
             )
@@ -417,124 +603,6 @@ def main() -> None:
             )
 
         st.divider()
-
-        if import_ie_clicked:
-            total_income = st.session_state.get("summary_monthly_income")
-            total_expenses = st.session_state.get("summary_monthly_expenses")
-
-            # If not in session state, load from defaults file
-            if total_income is None or total_expenses is None:
-                ie_settings_path = os.path.join(
-                    "saved_settings", "income_expenses", "defaults.json"
-                )
-                if os.path.exists(ie_settings_path):
-                    with open(ie_settings_path, "r", encoding="utf-8") as f:
-                        ie_settings = json.load(f)
-
-                    calc_mode = ie_settings.get("calc_mode", "separate")
-                    raw_monthly_income = sum(
-                        item["amount"]
-                        for item in ie_settings.get("income_monthly_items", [])
-                        if not item.get("hidden", False)
-                    )
-                    raw_monthly_expenses = sum(
-                        item["amount"]
-                        for item in ie_settings.get("expense_monthly_items", [])
-                        if not item.get("hidden", False)
-                    )
-                    converted_yearly_income = sum(
-                        item["amount"]
-                        for item in ie_settings.get("income_monthly_items", [])
-                        if "original_yearly" in item and not item.get("hidden", False)
-                    )
-                    converted_yearly_expenses = sum(
-                        item["amount"]
-                        for item in ie_settings.get("expense_monthly_items", [])
-                        if "original_yearly" in item and not item.get("hidden", False)
-                    )
-
-                    if calc_mode == "monthly":
-                        total_income = raw_monthly_income + converted_yearly_income
-                        total_expenses = raw_monthly_expenses + converted_yearly_expenses
-                    else:
-                        total_income = raw_monthly_income
-                        total_expenses = raw_monthly_expenses
-                else:
-                    total_income = 0.0
-                    total_expenses = 0.0
-
-            st.session_state["income1"] = format_number(total_income)
-            st.session_state["monthly_expenses"] = format_number(total_expenses)
-            # Remove _input keys to avoid conflict with widget default values
-            if "income1_input" in st.session_state:
-                del st.session_state["income1_input"]
-            if "monthly_expenses_input" in st.session_state:
-                del st.session_state["monthly_expenses_input"]
-            st.rerun()
-
-        if import_stock_clicked:
-            # Import stock income from Stock Estimator
-            # First try session state, then fall back to defaults.json
-            stock_settings = {}
-
-            # Check if Stock Estimator has been initialized in session state
-            if "_stock_estimator_initialized" in st.session_state:
-                # Read from session state
-                stock_settings = {
-                    "rsu_enabled": st.session_state.get("rsu_enabled", True),
-                    "rsu_blocks": st.session_state.get("rsu_blocks", []),
-                    "stock_start_price": st.session_state.get("stock_start_price", 40.0),
-                    "espp_enabled": st.session_state.get("espp_enabled", True),
-                    "espp_gross_income": st.session_state.get("espp_gross_income", 5000.0),
-                    "espp_contribution": st.session_state.get("espp_contribution", 10.0),
-                    "espp_discount": st.session_state.get("espp_discount", 15.0),
-                }
-            else:
-                # Fall back to defaults.json
-                stock_settings_path = os.path.join(
-                    "saved_settings", "stock_estimator", "defaults.json"
-                )
-                if os.path.exists(stock_settings_path):
-                    with open(stock_settings_path, "r", encoding="utf-8") as f:
-                        stock_settings = json.load(f)
-
-            # Calculate RSU monthly income (USD) from RSU blocks
-            rsu_monthly_usd = 0.0
-            if stock_settings.get("rsu_enabled", False):
-                rsu_blocks = stock_settings.get("rsu_blocks", [])
-                stock_price = stock_settings.get("stock_start_price", 40.0)
-
-                for block in rsu_blocks:
-                    if block.get("hidden", False):
-                        continue
-                    total_stocks = block.get("total_stocks", 0)
-                    vest_months = block.get("vest_months", 48)
-                    if vest_months > 0:
-                        # Quarterly vesting = stocks per quarter / 3 months
-                        stocks_per_month = total_stocks / vest_months / 2
-                        # Value in USD (before tax, fees, etc.)
-                        rsu_monthly_usd += stocks_per_month * stock_price
-
-            # Calculate ESPP monthly contribution value (EUR)
-            espp_monthly_eur = 0.0
-            if stock_settings.get("espp_enabled", False):
-                espp_gross = stock_settings.get("espp_gross_income", 0.0)
-                espp_contrib_pct = stock_settings.get("espp_contribution", 0.0) / 100
-                espp_discount = stock_settings.get("espp_discount", 15.0) / 100
-                # Monthly contribution + discount benefit
-                monthly_contrib = espp_gross * espp_contrib_pct
-                # Approximate monthly value including discount benefit
-                espp_monthly_eur = monthly_contrib * (1 + espp_discount)
-
-            # Always update values (even if 0 when disabled)
-            st.session_state["stock_income_usd"] = format_number(rsu_monthly_usd)
-            if "stock_income_usd_input" in st.session_state:
-                del st.session_state["stock_income_usd_input"]
-            st.session_state["espp_income_eur"] = format_number(espp_monthly_eur)
-            if "espp_income_eur_input" in st.session_state:
-                del st.session_state["espp_income_eur_input"]
-
-            st.rerun()
 
         # Savings & Investments
         st.subheader("💼 Savings & Investments")
@@ -613,13 +681,23 @@ def main() -> None:
                 disabled=not sell_stocks_monthly,
             )
         with col3:
-            sells_per_year_label = st.selectbox(
-                "Sells/Year",
-                options=list(sells_per_year_options.keys()),
-                index=10,  # Default to "12 (monthly)"
-                key="sells_per_year_label",
-                disabled=not sell_stocks_monthly,
-            )
+            selectbox_key = "sells_per_year_label"
+            # Only set index if no session state value exists to avoid conflict
+            if selectbox_key in st.session_state:
+                sells_per_year_label = st.selectbox(
+                    "Sells/Year",
+                    options=list(sells_per_year_options.keys()),
+                    key=selectbox_key,
+                    disabled=not sell_stocks_monthly,
+                )
+            else:
+                sells_per_year_label = st.selectbox(
+                    "Sells/Year",
+                    options=list(sells_per_year_options.keys()),
+                    index=10,  # Default to "12 (monthly)"
+                    key=selectbox_key,
+                    disabled=not sell_stocks_monthly,
+                )
         sells_per_year = sells_per_year_options[sells_per_year_label]
 
         # Calculate stock income based on selling frequency

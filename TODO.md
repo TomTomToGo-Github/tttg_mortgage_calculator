@@ -1,6 +1,14 @@
 # Missing future improvements
 
 ## Specify settings from Wealth Estimator
+- When startup and then directly loading in wealth estimator: The widget with key "income1_input" was created with a default value but also had its value set via the Session State API.
+
+- Introduce categories (and subcategories) to have better overview graphs
+
+- Introduce example months, years, etc. to gain some better educated guesses at a new years earnings/spendings.
+
+- Fix bug of not paying back mortgage. Is it 
+
 - One can import the results from the pages "stock_estimator" and "income_expenses" to the "wealth_calculator" -> it would be nice to select which settingts these pages have from the "wealth_calculator", instead of having to change pages and set them manually
 
 - The "Savings -> Bank vs Stocks" slider and below the Sell stocks via schedule are not very intuitive yet, and are also slightly contradictory and not finetunable (one idea would be to have. Currently one would be selling all regularly and then "rebuying" the stocks). Figure out a way to treat the stock income and the buying of other stocks as separate entities (1. select the quantity of  stock income to be sold by selected schedule, then the Savings slider is applied to all income (money + money from realized stocks)).
@@ -14,3 +22,9 @@
 - Rework the Overview page with the top results of the other pages
 
 - Complete refactor of the codebase to be modular, separating computation from UI components, and make individual calculations easily understandable and editable
+
+- Tests for the refactored codebase (primarily for the individual calculations, but also for settings of the ui?)
+
+- Future: An optimize button -> calculating the best outcome with what you have: so much in stocks, so much money saved, etc. maybe even a LLM optimizer looking at how to reduce spending and increase income
+
+- For now it is assumed, that nothing changes over time (apart from home appreciation and stock value increase). One could calculate more sophisticated manner, taking averages of inflation, cold progression, etc. into account

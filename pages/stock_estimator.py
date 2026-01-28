@@ -479,6 +479,36 @@ def calculate_self_buying(
     return pd.DataFrame(data)
 
 
+def load_settings_and_update(settings_name: str) -> None:
+    """Load settings and update current setting tracking."""
+    load_settings(settings_name)
+    st.session_state["_stock_estimator_current_setting"] = settings_name
+
+
+def delete_settings_and_update(settings_name: str) -> None:
+    """Delete settings and update current setting tracking."""
+    delete_settings(settings_name)
+    # If we deleted the current setting, reset to first available
+    if settings_name == st.session_state.get("_stock_estimator_current_setting"):
+        remaining_settings = get_saved_settings()
+        if remaining_settings:
+            st.session_state["_stock_estimator_current_setting"] = remaining_settings[0]
+
+
+def load_settings_callback() -> None:
+    """Callback function for load button."""
+    selected = st.session_state.get("selected_settings", "(no settings saved)")
+    if selected != "(no settings saved)":
+        load_settings_and_update(selected)
+
+
+def delete_settings_callback() -> None:
+    """Callback function for delete button."""
+    selected = st.session_state.get("selected_settings", "(no settings saved)")
+    if selected != "(no settings saved)":
+        delete_settings_and_update(selected)
+
+
 def main() -> None:
     """Run the Stock Estimator page."""
     st.set_page_config(
@@ -511,6 +541,17 @@ def main() -> None:
 
     # Initialize session state from defaults (only on first app init)
     init_session_state()
+    
+    # Auto-load first available setting on startup (only for this page)
+    if "_stock_estimator_settings_loaded" not in st.session_state:
+        settings_options = get_saved_settings()
+        if settings_options:
+            # Store which setting we're loading
+            st.session_state["_stock_estimator_current_setting"] = settings_options[0]
+            load_settings(settings_options[0])
+            st.session_state["_stock_estimator_settings_loaded"] = True
+            # Trigger rerun to ensure widgets display loaded values
+            st.rerun()
 
     # Sidebar inputs
     with st.sidebar:
@@ -518,26 +559,32 @@ def main() -> None:
         settings_options = get_saved_settings()
         has_settings = len(settings_options) > 0
         select_options = settings_options if has_settings else ["(no settings saved)"]
+        
+        # Get current setting from session state, default to first if not set
+        current_setting = st.session_state.get("_stock_estimator_current_setting", settings_options[0] if settings_options else "(no settings saved)")
+        # Find index of current setting
+        default_index = 0
+        if current_setting in select_options:
+            default_index = select_options.index(current_setting)
+        
         selected_settings = st.selectbox(
             "Load Settings",
             options=select_options,
-            index=0,
+            index=default_index,
             key="selected_settings",
         )
         col_load, col_delete = st.columns(2)
         with col_load:
             st.button(
                 "Load",
-                on_click=load_settings,
-                args=(selected_settings,),
+                on_click=load_settings_callback,
                 disabled=not has_settings,
                 use_container_width=True,
             )
         with col_delete:
             st.button(
                 "Delete",
-                on_click=delete_settings,
-                args=(selected_settings,),
+                on_click=delete_settings_callback,
                 disabled=not has_settings,
                 use_container_width=True,
             )
