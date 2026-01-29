@@ -1,4 +1,5 @@
 import json
+import math
 import os
 
 import streamlit as st
@@ -602,6 +603,12 @@ def main() -> None:
                 "Income Stock Buys (€, e.g. ESPP)", 0.0, "espp_income_eur"
             )
 
+        # Basic net stock income calculation (without selling fees for display)
+        usd_eur_rate = st.session_state.get("usd_eur_rate", 0.92)
+        rsu_income_basic = stock_income_usd * usd_eur_rate
+        stock_income_basic = rsu_income_basic + espp_income_eur
+        st.caption(f"Net stock income: {format_currency(stock_income_basic)}")
+
         st.divider()
 
         # Savings & Investments
@@ -615,6 +622,8 @@ def main() -> None:
             initial_stock_wealth = currency_input(
                 "Initial Stock Portfolio", 20000.0, "initial_stock_wealth"
             )
+        
+        # Investment Growth Rates
         col1, col2 = st.columns(2)
         with col1:
             bank_return = st.number_input(
@@ -630,25 +639,13 @@ def main() -> None:
                 step=0.5,
                 key="stock_growth",
             )
-        bank_reserve_ratio = st.slider(
-            "Savings → Bank vs Stocks",
-            min_value=0.0,
-            max_value=1.0,
-            step=0.1,
-            help="Fraction of monthly savings kept in bank (rest goes to stocks)",
-            key="bank_reserve_ratio",
-        )
 
-        # Sell stocks checkbox and selling parameters
-        sell_stocks_monthly = st.checkbox(
-            "Sell stocks via schedule",
-            value=False,
-            key="sell_stocks_monthly",
-            help="If checked, stock income is sold and converted to cash. "
-                 "Otherwise kept in stock portfolio.",
-        )
-
-        # Selling parameters (only relevant when selling)
+        # Default values for stock selling (will be set in UI section)
+        sell_stocks_monthly = st.session_state.get("sell_stocks_monthly", False)
+        stock_selling_rate = st.session_state.get("stock_selling_rate", 0.0) if sell_stocks_monthly else 0.0
+        usd_eur_rate = st.session_state.get("usd_eur_rate", 0.92)
+        selling_fee = st.session_state.get("transaction_fee", 5.0)
+        sells_per_year_label = st.session_state.get("sells_per_year_label", "12 (monthly)")
         sells_per_year_options = {
             "1/12 (biennial)": 1/12,
             "1/6": 1/6,
@@ -657,48 +654,12 @@ def main() -> None:
             "1/2 (biannual)": 1/2,
             "1": 1.0,
             "2": 2.0,
-            "3": 3.0,
-            "4 (quarterly)": 4.0,
+            "3 (quarterly)": 3.0,
+            "4": 4.0,
             "6": 6.0,
             "12 (monthly)": 12.0,
         }
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            usd_eur_rate = st.number_input(
-                "USD/EUR",
-                min_value=0.01,
-                step=0.01,
-                format="%.4f",
-                key="usd_eur_rate",
-                disabled=not sell_stocks_monthly,
-            )
-        with col2:
-            selling_fee = st.number_input(
-                "Selling Fee (€)",
-                min_value=0.0,
-                step=1.0,
-                key="transaction_fee",
-                disabled=not sell_stocks_monthly,
-            )
-        with col3:
-            selectbox_key = "sells_per_year_label"
-            # Only set index if no session state value exists to avoid conflict
-            if selectbox_key in st.session_state:
-                sells_per_year_label = st.selectbox(
-                    "Sells/Year",
-                    options=list(sells_per_year_options.keys()),
-                    key=selectbox_key,
-                    disabled=not sell_stocks_monthly,
-                )
-            else:
-                sells_per_year_label = st.selectbox(
-                    "Sells/Year",
-                    options=list(sells_per_year_options.keys()),
-                    index=10,  # Default to "12 (monthly)"
-                    key=selectbox_key,
-                    disabled=not sell_stocks_monthly,
-                )
-        sells_per_year = sells_per_year_options[sells_per_year_label]
+        sells_per_year = sells_per_year_options.get(sells_per_year_label, 12.0)
 
         # Calculate stock income based on selling frequency
         if sell_stocks_monthly and sells_per_year > 0:
@@ -712,11 +673,10 @@ def main() -> None:
             # No selling, no fee
             rsu_income = stock_income_usd * usd_eur_rate
 
-        # Total stock income = RSU (converted) + ESPP (already in EUR)
+        # Total stock income = RSU (converted) + ESPP
         stock_income = rsu_income + espp_income_eur
         # reinvest_dividends is the inverse of sell_stocks_monthly
         reinvest_dividends = not sell_stocks_monthly
-        st.caption(f"Net stock income: {format_currency(stock_income)}")
 
         st.divider()
 
@@ -779,10 +739,15 @@ def main() -> None:
         # Initialize monthly payment in session state if needed
         if "monthly_payment" not in st.session_state:
             st.session_state["monthly_payment"] = format_number(calc_monthly_payment)
-        if "monmonthly_capacity_payment" not in st.session_state:
+        if "monthly_capacity" not in st.session_state:
             st.session_state["monthly_capacity"] = format_number(calc_monthly_capacity)
         if "stock_income" not in st.session_state:
-            st.session_state["monthly_capacity"] = format_number(calc_monthly_capacity)
+            st.session_state["stock_income"] = format_number(stock_income)
+        
+        # Always update session state to keep values in sync with current calculations
+        st.session_state["monthly_capacity"] = format_number(calc_monthly_capacity)
+        st.session_state["stock_income"] = format_number(stock_income)
+        
         # Check if property/mortgage inputs changed - update payment display
         if "last_calc_payment" not in st.session_state:
             st.session_state["last_calc_payment"] = calc_monthly_payment
@@ -790,31 +755,227 @@ def main() -> None:
             st.session_state["monthly_payment"] = format_number(calc_monthly_payment)
             st.session_state["last_calc_payment"] = calc_monthly_payment
 
-        # Monthly payment input
+        # Calculate additional financial metrics
+        # Money realized = cash income + realized stock income - stocks bought
+        realized_stock_for_calc = stock_income * (stock_selling_rate / 100.0)
+        retained_stock_for_calc = stock_income * (1 - stock_selling_rate / 100.0)
+        money_realized = income1 + income2 - monthly_expenses + realized_stock_for_calc
+        
+        # Saved money = actual money available after mortgage
+        saved_money = money_realized - calc_monthly_payment
+        
+        # Monthly stock gains = stock income + stocks bought - stocks sold
+        stock_gains = retained_stock_for_calc + 0  # Missing add the converted money to stock income
+
+        # Additional Financial Metrics
+
+        # Investment Rate Controls
+        st.divider()
+        st.subheader("📈 Investment Rates")
+        
+        bank_reserve_ratio = st.slider(
+            "Savings → Bank vs Stocks",
+            min_value=0.0,
+            max_value=1.0,
+            step=0.1,
+            help="Fraction of monthly savings kept in bank (rest goes to stocks)",
+            key="bank_reserve_ratio",
+        )
+
+        # Stock Selling Controls
+        st.divider()
+        st.subheader("💰 Stock Selling Strategy")
+        
+        # Monthly payment input (above capacity fields)
         payment_text = st.text_input(
             "Monthly Mortgage Payment Due [€]",
             value=st.session_state["monthly_payment"],
             key="monthly_payment_input",
             help="Edit to adjust property value to meet this payment",
         )
-        monthly_capacity_text = st.text_input(
-            "Monthly Money Capacity [€]",
-            value=st.session_state["monthly_capacity"],
-            key="monthly_capacity_input",
-            help="The spare money from calculating income + stocks converted to money - expenses. Must be greater than monthly payment.",
-        )
-        monthly_stock_text = st.text_input(
-            "Monthly Stock Capacity [€]",
-            value=stock_income,
-            key="monthly_stock_capacity_input",
-            help="The spare stocks not converted into money yet",
-        )
+        
+        # Monthly capacity fields (horizontal layout under payment)
+        col1, col2 = st.columns(2)
+        with col1:
+            monthly_capacity_text = st.text_input(
+                "Monthly Money Capacity [€]",
+                value=st.session_state["monthly_capacity"],
+                key="monthly_capacity_input",
+                help="The spare money from calculating income + stocks converted to money - expenses. Must be greater than monthly payment.",
+            )
+        with col2:
+            monthly_stock_text = st.text_input(
+                "Monthly Stock Capacity [€]",
+                value=format_number(stock_income),
+                key="monthly_stock_capacity_input",
+                help="The spare stocks not converted into money yet",
+            )
+        
+        # Stock selling controls with buttons
+        col1, col2, col3 = st.columns([2, 1, 1])
+        with col1:
+            sell_stocks_monthly = st.checkbox(
+                "Sell stock income via schedule",
+                value=False,
+                key="sell_stocks_monthly",
+                help="If checked, stock income is sold and converted to cash. "
+                     "Otherwise kept in stock portfolio.",
+            )
+        with col2:
+            if st.button("Max out potential Property value"):
+                # Get the actual numbers from the UI fields
+                monthly_capacity = parse_formatted_number(st.session_state.get("monthly_capacity", "0"), 0)
+                stock_income = parse_formatted_number(st.session_state.get("stock_income", "0"), 0)
+                total_capacity = monthly_capacity + stock_income
+                
+                # Round down to exact cents (2 decimal places)
+                total_capacity_rounded = math.floor(total_capacity * 100) / 100
+                
+                # Update session state - enable stock selling and set to 100%
+                st.session_state["monthly_payment"] = format_number(total_capacity_rounded)
+                st.session_state["stock_selling_rate"] = 100.0
+                st.session_state["_button_clicked"] = True  # Flag to prevent property calc interference
+                
+                st.success(f"Payment set to {format_number(total_capacity_rounded)} and selling rate set to 100%")
+                st.rerun()
+        with col3:
+            if st.button("Match mortgage payment"):
+                # Calculate required selling rate to match current mortgage payment
+                current_payment = parse_formatted_number(st.session_state.get("monthly_payment", "0"), 0)
+                monthly_capacity = calc_monthly_capacity  # Use calculated value
+                stock_income = stock_income  # Use current stock_income variable
+                
+                if monthly_capacity >= current_payment:
+                    # Money capacity is sufficient, no stock selling needed
+                    st.session_state["stock_selling_rate"] = 0.0
+                    st.success("Money capacity sufficient! Stock selling rate set to 0%")
+                else:
+                    # Need stock selling to cover the difference
+                    needed_from_stocks = current_payment - monthly_capacity
+                    if stock_income > 0:
+                        # Start with 0% selling rate
+                        st.session_state["stock_selling_rate"] = 0.0
+                        
+                        # Calculate exact percentage needed to cover the difference
+                        required_rate = (needed_from_stocks / stock_income) * 100
+                        # Round to full integer
+                        required_rate_rounded = math.ceil(required_rate)
+                        
+                        if required_rate_rounded <= 100:
+                            st.session_state["stock_selling_rate"] = float(required_rate_rounded)
+                            st.success(f"Stock selling rate set to {required_rate_rounded:.0f}% to match payment")
+                        else:
+                            # Not enough stock income either, set to max and update payment
+                            st.session_state["stock_selling_rate"] = 100.0
+                            max_possible = monthly_capacity + stock_income
+                            max_possible_rounded = math.floor(max_possible * 100) / 100
+                            st.session_state["monthly_payment"] = format_number(max_possible_rounded)
+                            st.warning(f"Insufficient capacity. Payment updated to maximum possible: {format_number(max_possible_rounded)}")
+                    else:
+                        # No stock income available
+                        monthly_capacity_rounded = math.floor(monthly_capacity * 100) / 100
+                        st.session_state["monthly_payment"] = format_number(monthly_capacity_rounded)
+                        st.warning(f"No stock income available. Payment updated to money capacity: {format_number(monthly_capacity_rounded)}")
+                
+                st.rerun()
+
+        # Stock selling rate (only relevant when selling)
+        if sell_stocks_monthly:
+            stock_selling_rate = st.slider(
+                "Stock Selling Rate (%)",
+                min_value=0.0,
+                max_value=100.0,
+                value=st.session_state.get("stock_selling_rate", 0.0),
+                step=0.1,
+                key="stock_selling_rate",
+                help="Percentage of stock income to sell. 100% = sell all stock income, 0% = sell none.",
+            )
+            
+            # Selling parameters (only relevant when selling)
+            sells_per_year_options = {
+                "1/12 (biennial)": 1/12,
+                "1/6": 1/6,
+                "1/4 (every 4y)": 1/4,
+                "1/3": 1/3,
+                "1/2 (biannual)": 1/2,
+                "1": 1.0,
+                "2": 2.0,
+                "3": 3.0,
+                "4 (quarterly)": 4.0,
+                "6": 6.0,
+                "12 (monthly)": 12.0,
+            }
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                usd_eur_rate = st.number_input(
+                    "USD/EUR",
+                    min_value=0.01,
+                    step=0.01,
+                    format="%.4f",
+                    key="usd_eur_rate",
+                )
+            with col2:
+                selling_fee = st.number_input(
+                    "Selling Fee (€)",
+                    min_value=0.0,
+                    step=1.0,
+                    key="transaction_fee",
+                )
+            with col3:
+                selectbox_key = "sells_per_year_label"
+                # Only set index if no session state value exists to avoid conflict
+                if selectbox_key in st.session_state:
+                    sells_per_year_label = st.selectbox(
+                        "Sells/Year",
+                        options=list(sells_per_year_options.keys()),
+                        key=selectbox_key,
+                    )
+                else:
+                    sells_per_year_label = st.selectbox(
+                        "Sells/Year",
+                        options=list(sells_per_year_options.keys()),
+                        index=10,  # Default to "12 (monthly)"
+                        key=selectbox_key,
+                    )
+            sells_per_year = sells_per_year_options[sells_per_year_label]
+        else:
+            stock_selling_rate = 0.0
+
+        # Financial metrics (horizontal layout)
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            money_realized_text = st.text_input(
+                "Actual Money Realized [€]",
+                value=format_number(money_realized),
+                key="money_realized_input",
+                help="Cash income + realized stock income - expenses. Available cash flow before mortgage.",
+            )
+        with col2:
+            saved_money_text = st.text_input(
+                "Saved Money [€]",
+                value=format_number(saved_money),
+                key="saved_money_input",
+                help="Actual money available after mortgage payment. Money available for savings and investments.",
+            )
+        with col3:
+            stock_gains_text = st.text_input(
+                "Monthly Stock Gains [€]",
+                value=format_number(stock_gains),
+                key="stock_gains_input",
+                help="Stock income + stocks bought - stocks sold. Growth in stock portfolio value.",
+            )
+        
+        # Show warning if saved money is negative
+        if saved_money < 0:
+            st.error("⚠️ Negative saved money! Expenses exceed income after mortgage payment.")
+        elif saved_money < 100:
+            st.warning("⚠️ Low saved money! Consider reducing expenses or increasing income.")
 
 
         edited_payment = parse_formatted_number(payment_text, calc_monthly_payment)
 
-        # If user edited the payment, calculate new property value
-        if abs(edited_payment - calc_monthly_payment) > 0.01:
+        # If user edited the payment, calculate new property value (but not if button was clicked)
+        if abs(edited_payment - calc_monthly_payment) > 0.01 and not st.session_state.get("_button_clicked", False):
             new_property_value = calculate_property_from_payment(
                 edited_payment, interest_rate, loan_term, down_payment
             )
@@ -823,6 +984,10 @@ def main() -> None:
             st.session_state["monthly_payment"] = format_number(edited_payment)
             st.session_state["last_calc_payment"] = edited_payment
             st.rerun()
+        
+        # Clear the button flag after processing
+        if st.session_state.get("_button_clicked", False):
+            st.session_state["_button_clicked"] = False
 
     # --------------------------------------------------------------- Calculations
     monthly_payment = calculate_mortgage(
@@ -842,7 +1007,7 @@ def main() -> None:
         initial_bank_balance=initial_bank_balance,
         monthly_income1=income1,
         monthly_income2=income2,
-        stock_income=stock_income,
+        stock_income=retained_stock_for_calc,  # Only unsold portion goes to stocks
         monthly_expenses=monthly_expenses,
         years=projection_years,
         property_value=property_value,
@@ -854,8 +1019,41 @@ def main() -> None:
         down_payment=down_payment,
         initial_stock_wealth=initial_stock_wealth,
         bank_reserve_ratio=bank_reserve_ratio,
-        reinvest_dividends=reinvest_dividends,
+        reinvest_dividends=True,  # Always reinvest retained stock portion
     )
+    
+    # Add realized stock income to bank reserve (sold stocks become cash)
+    if sell_stocks_monthly and realized_stock_for_calc > 0:
+        # Add sold stock income directly to bank reserve (not subject to bank_reserve_ratio)
+        net_worth_df["Bank Reserve"] = net_worth_df["Bank Reserve"] + realized_stock_for_calc
+    
+    # Recalculate Liquid Assets to reflect actual available money
+    # Formula: Initial Bank Balance + Money Realized - Mortgage Payments
+    liquid_assets = []
+    for i in range(len(net_worth_df)):
+        if i == 0:
+            # First month: initial bank balance + saved money
+            current_liquid = initial_bank_balance + saved_money
+        else:
+            # Subsequent months: previous liquid assets + saved money (monthly cash flow)
+            current_liquid = liquid_assets[i-1] + saved_money
+        liquid_assets.append(current_liquid)
+    
+    net_worth_df["Liquid Assets"] = liquid_assets
+    
+    # Also recalculate Bank Reserve to be more accurate
+    # The original calculation splits cash flow by bank_reserve_ratio, but sold stocks should go entirely to bank
+    bank_reserve_corrected = []
+    for i in range(len(net_worth_df)):
+        if i == 0:
+            # First month: initial bank balance + saved money (sold stocks already included in saved_money)
+            current_bank = initial_bank_balance + saved_money
+        else:
+            # Subsequent months: apply bank return to previous balance, then add saved money
+            current_bank = bank_reserve_corrected[i-1] * (1 + bank_return / 12 / 100) + saved_money
+        bank_reserve_corrected.append(current_bank)
+    
+    net_worth_df["Bank Reserve"] = bank_reserve_corrected
 
     # Add Year column for charting
     net_worth_df["Year"] = net_worth_df["Month"] / 12

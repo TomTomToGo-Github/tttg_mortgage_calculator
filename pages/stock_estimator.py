@@ -38,6 +38,11 @@ STOCK_ESTIMATOR_DEFAULTS = {
     "espp_start_offset": 0,
     "espp_vesting_interval": 6,
     "espp_discount": 15.0,
+    "espp_bonuses_enabled": False,
+    "espp_13th_enabled": True,
+    "espp_13th_factor": 1.0,
+    "espp_14th_enabled": True,
+    "espp_14th_factor": 1.0,
     "self_enabled": True,
     "self_net_income": 3500.0,
     "self_investment_type": "Fixed Amount",
@@ -117,6 +122,11 @@ def save_current_settings(settings_name: str) -> None:
         "espp_start_offset": st.session_state.get("espp_start_offset", 0),
         "espp_vesting_interval": st.session_state.get("espp_vesting_interval", 6),
         "espp_discount": st.session_state.get("espp_discount", 15.0),
+        "espp_bonuses_enabled": st.session_state.get("espp_bonuses_enabled", False),
+        "espp_13th_enabled": st.session_state.get("espp_13th_enabled", True),
+        "espp_13th_factor": st.session_state.get("espp_13th_factor", 1.0),
+        "espp_14th_enabled": st.session_state.get("espp_14th_enabled", True),
+        "espp_14th_factor": st.session_state.get("espp_14th_factor", 1.0),
         "self_enabled": st.session_state.get("self_enabled", True),
         "self_net_income": st.session_state.get("self_net_income", 3500.0),
         "self_investment_type": st.session_state.get("self_investment_type", "Fixed Amount"),
@@ -206,6 +216,7 @@ def calculate_rsu_vesting(
     usd_to_eur: float = 1.0,
     transaction_fee_usd: float = 9.99,
     selling_loss_usd: float = 0.05,
+    plan_id: int = 1,
 ) -> pd.DataFrame:
     """Calculate RSU vesting schedule with quarterly payouts.
 
@@ -251,6 +262,8 @@ def calculate_rsu_vesting(
         "RSU_Cumulative_Stocks": [0.0] * months,
         "RSU_Cumulative_Value": [0.0] * months,
         "RSU_Cumulative_Rest": [0.0] * months,
+        "RSU_Payout_Number": [0] * months,
+        "RSU_Payout_Source": [""] * months,
     }
 
     if vesting_period_months <= 0:
@@ -270,9 +283,11 @@ def calculate_rsu_vesting(
 
     cumulative_stocks = 0.0
     cumulative_rest = 0.0
+    payout_counter = 0
 
-    def process_vesting(vest_index: int, vested: int):
+    def process_vesting(vest_index: int, vested: int, source_info: str = ""):
         """Process a single vesting event."""
+        nonlocal payout_counter
         if vested <= 0 or vest_index < 0 or vest_index >= months:
             return
 
@@ -311,35 +326,66 @@ def calculate_rsu_vesting(
         data["RSU_Rest_Amount"][vest_index] += rest_amount_eur
         data["RSU_Value"][vest_index] = max(0, data["RSU_Value"][vest_index] + value_eur)
 
-    # Process each quarter
+        # Set payout number and source
+        if data["RSU_Payout_Number"][vest_index] == 0:
+            # First payout for this month - increment counter
+            payout_counter += 1
+            data["RSU_Payout_Number"][vest_index] = payout_counter
+            data["RSU_Payout_Source"][vest_index] = source_info
+        else:
+            # Additional payout for same month - append to source
+            existing_source = data["RSU_Payout_Source"][vest_index]
+            if existing_source:
+                data["RSU_Payout_Source"][vest_index] = f"{existing_source} + {source_info}"
+            else:
+                data["RSU_Payout_Source"][vest_index] = source_info
+
+    # Process each quarter relative to start offset
     stocks_distributed = 0
     for q in range(total_quarters):
         # Calculate stocks for this quarter (distribute remainder to first quarters)
         quarter_stocks = base_stocks_per_quarter + (1 if q < remainder else 0)
         stocks_distributed += quarter_stocks
 
-        # Quarter month (1-indexed): q=0 -> month 3, q=1 -> month 6, etc.
-        quarter_month = (q + 1) * 3
-
-        if quarter_month <= delay_months:
-            # This quarter is within delay period - will be paid at first payout
+        # Calculate when this quarter vests relative to start
+        # Quarter 0 vests 3 months after start, Quarter 1 vests 6 months after start, etc.
+        quarter_vesting_month = start_offset + (q + 1) * 3
+        
+        # Check if this quarter is affected by delay (vests during delay period)
+        # Delay period is from start_offset to start_offset + delay_months (inclusive)
+        if quarter_vesting_month <= start_offset + delay_months:
+            # This quarter is within delay period - will be accumulated and paid later
             continue
 
-        # Determine payout month
+        # Determine the actual payout month
         if q == delayed_quarters and delayed_quarters > 0:
-            # First payout after delay - includes all delayed quarters
-            payout_month = start_offset + delay_months + 3
-            # Sum up all delayed quarters' stocks
+            # This is the first quarter after delay - payout happens for delayed quarters only
+            # Payout happens at start_offset + delay_months (no +1)
+            payout_month = start_offset + delay_months
+            
+            # Sum up all delayed quarters' stocks only (exactly delayed_quarters many)
             delayed_stocks = 0
             for dq in range(delayed_quarters):
                 delayed_stocks += base_stocks_per_quarter + (1 if dq < remainder else 0)
-            vested = delayed_stocks + quarter_stocks
-        else:
-            payout_month = start_offset + quarter_month
+            vested = delayed_stocks  # Only delayed quarters, not current quarter
+            
+            # Process the delayed quarters payout
+            vest_index = payout_month - 1
+            delayed_source = f"Plan {plan_id} ({delayed_stocks} stocks)"
+            process_vesting(vest_index, vested, delayed_source)
+            
+            # Now process the current quarter normally
+            payout_month = quarter_vesting_month
             vested = quarter_stocks
+            current_source = f"Plan {plan_id} ({quarter_stocks} stocks)"
+        else:
+            # Normal quarter - payout happens when quarter vests
+            payout_month = quarter_vesting_month
+            vested = quarter_stocks
+            current_source = f"Plan {plan_id} ({quarter_stocks} stocks)"
 
         vest_index = payout_month - 1
-        process_vesting(vest_index, vested)
+        process_vesting(vest_index, vested, current_source)
 
     # Calculate cumulative values
     for month in range(months):
@@ -360,6 +406,9 @@ def calculate_espp_vesting(
     discount_rate: float = 0.15,
     vesting_interval_months: int = 6,
     start_offset: int = 0,
+    bonuses_enabled: bool = False,
+    bonus_13th_factor: float = 1.0,
+    bonus_14th_factor: float = 1.0,
 ) -> pd.DataFrame:
     """Calculate ESPP vesting schedule.
 
@@ -377,6 +426,12 @@ def calculate_espp_vesting(
         Months between purchases (default 6).
     start_offset : int
         Number of months from now when ESPP starts.
+    bonuses_enabled : bool
+        Whether to include 13th and 14th salary bonuses.
+    bonus_13th_factor : float
+        Multiplier for 13th salary (usually 1.0).
+    bonus_14th_factor : float
+        Multiplier for 14th salary (usually 1.0).
 
     Returns
     -------
@@ -393,7 +448,8 @@ def calculate_espp_vesting(
         "ESPP_Cumulative_Value": [0.0] * months,
     }
 
-    monthly_contribution = gross_income * contribution_percent
+    # Calculate base monthly contribution
+    base_monthly_contribution = gross_income * contribution_percent
     cumulative_stocks = 0.0
     accumulated_contribution = 0.0
     period_start_price = stock_prices[start_offset] if start_offset < months else 0.0
@@ -401,6 +457,22 @@ def calculate_espp_vesting(
     for month in range(months):
         # Only contribute after start offset
         if month >= start_offset:
+            # Base monthly contribution
+            monthly_contribution = base_monthly_contribution
+            
+            # Add bonus contributions in specific months
+            if bonuses_enabled:
+                # Convert 0-based month index to calendar month (1-12)
+                calendar_month = (month % 12) + 1
+                
+                # 13th salary (Vacation bonus) - typically June
+                if calendar_month == 11 and bonus_13th_factor > 0:
+                    monthly_contribution += base_monthly_contribution * bonus_13th_factor
+                
+                # 14th salary (Christmas bonus) - typically November  
+                if calendar_month == 6 and bonus_14th_factor > 0:
+                    monthly_contribution += base_monthly_contribution * bonus_14th_factor
+            
             data["ESPP_Contribution"][month] = monthly_contribution
             accumulated_contribution += monthly_contribution
 
@@ -671,10 +743,11 @@ def main() -> None:
                     "- Payouts happen **quarterly** (every 3 months)\n"
                     "- If a **delay** (cliff) is set, the first payout includes all "
                     "accumulated quarters\n"
-                    "- Example with **start=4, delay=0**: 480 stocks over 48m → first payout at month 5 "
-                    "(4+0+1) with 30 stocks, then 15 more quarterly payouts of 30 stocks each\n"
-                    "- Example with **start=2, delay=12**: 480 stocks over 48m → first payout at month 15 "
-                    "(2+12+1) with 120 stocks (4 quarters), then 12 quarterly payouts of 30 stocks each\n\n"
+                    "-Basic example with **start=0, delay=0**: 480 stocks over 36m (36/12*4=12 payouts) → first payout at month 0 "
+                    "(0+0) with 40 stocks (480/36*3), then 11 more quarterly payouts of 40 stocks each\n"
+                    "- Typical example with **start=1, delay=12**: 480 stocks over 36m (36/12*4=12 payouts, but first 4 payouts "
+                    "happen together in month 13=1+12) → first payout at month 13 "
+                    "(2+12) with 160 stocks (4 quarters), then 8 more quarterly payouts of 40 stocks each\n\n"
                     "**Abbreviations:**\n"
                     "- V ... number of vested stocks\n"
                     "- P ... stock price (\\$)\n"
@@ -933,12 +1006,71 @@ def main() -> None:
                 )
                 st.session_state["espp_discount"] = espp_discount_pct
                 espp_discount = espp_discount_pct / 100
+
+            # Austrian Bonus Payments (13th and 14th salaries)
+            st.markdown("**Austrian Bonus Payments**")
+            espp_bonuses_enabled = st.checkbox(
+                "Include 13th & 14th Salary Bonuses",
+                value=st.session_state.get("espp_bonuses_enabled", False),
+                key="espp_bonuses_enabled",
+                help="Include Austrian 13th (Christmas) and 14th (vacation) salary bonuses in ESPP calculations",
+            )
+            
+            if espp_bonuses_enabled:
+                c1, c2 = st.columns(2)
+                with c1:
+                    espp_13th_enabled = st.checkbox(
+                        "13th Salary (Christmas Bonus)",
+                        value=st.session_state.get("espp_13th_enabled", True),
+                        key="espp_13th_enabled",
+                    )
+                    if espp_13th_enabled:
+                        espp_13th_factor = st.number_input(
+                            "13th Salary Factor",
+                            min_value=0.0,
+                            max_value=2.0,
+                            value=st.session_state.get("espp_13th_factor", 1.0),
+                            step=0.1,
+                            key="espp_13th_factor",
+                            help="Multiplier for 13th salary (1.0 = full monthly salary)",
+                        )
+                    else:
+                        espp_13th_factor = 0.0
+                        
+                with c2:
+                    espp_14th_enabled = st.checkbox(
+                        "14th Salary (Vacation Bonus)",
+                        value=st.session_state.get("espp_14th_enabled", True),
+                        key="espp_14th_enabled",
+                    )
+                    if espp_14th_enabled:
+                        espp_14th_factor = st.number_input(
+                            "14th Salary Factor",
+                            min_value=0.0,
+                            max_value=2.0,
+                            value=st.session_state.get("espp_14th_factor", 1.0),
+                            step=0.1,
+                            key="espp_14th_factor",
+                            help="Multiplier for 14th salary (1.0 = full monthly salary)",
+                        )
+                    else:
+                        espp_14th_factor = 0.0
+            else:
+                espp_13th_enabled = False
+                espp_14th_enabled = False
+                espp_13th_factor = 0.0
+                espp_14th_factor = 0.0
         else:
             espp_gross_income = 0.0
             espp_contribution = 0.0
             espp_start_offset = 0
             espp_vesting_interval = 6
             espp_discount = 0.0
+            espp_bonuses_enabled = False
+            espp_13th_enabled = False
+            espp_14th_enabled = False
+            espp_13th_factor = 0.0
+            espp_14th_factor = 0.0
 
         st.divider()
 
@@ -1003,7 +1135,7 @@ def main() -> None:
 
     # Calculate RSU for all blocks and combine
     rsu_dfs = []
-    for block_data in rsu_blocks_data:
+    for idx, block_data in enumerate(rsu_blocks_data):
         block_df = calculate_rsu_vesting(
             block_data["total_stocks"],
             block_data["vesting_period"],
@@ -1013,6 +1145,7 @@ def main() -> None:
             block_data["usd_to_eur"],
             block_data["transaction_fee"],
             block_data["selling_loss"],
+            plan_id=idx + 1,  # Pass plan identifier (1-based)
         )
         rsu_dfs.append(block_df)
 
@@ -1031,6 +1164,23 @@ def main() -> None:
             rsu_df["RSU_Cumulative_Stocks"] += df["RSU_Cumulative_Stocks"]
             rsu_df["RSU_Cumulative_Value"] += df["RSU_Cumulative_Value"]
             rsu_df["RSU_Cumulative_Rest"] += df["RSU_Cumulative_Rest"]
+            
+            # Combine payout numbers and sources
+            for i in range(len(rsu_df)):
+                if df.loc[i, "RSU_Payout_Number"] > 0:
+                    if rsu_df.loc[i, "RSU_Payout_Number"] == 0:
+                        # No payout yet in this month, take from second dataframe
+                        rsu_df.loc[i, "RSU_Payout_Number"] = df.loc[i, "RSU_Payout_Number"]
+                        rsu_df.loc[i, "RSU_Payout_Source"] = df.loc[i, "RSU_Payout_Source"]
+                    else:
+                        # Both have payouts in same month, combine sources
+                        existing_source = rsu_df.loc[i, "RSU_Payout_Source"]
+                        new_source = df.loc[i, "RSU_Payout_Source"]
+                        if new_source:
+                            if existing_source:
+                                rsu_df.loc[i, "RSU_Payout_Source"] = f"{existing_source} + {new_source}"
+                            else:
+                                rsu_df.loc[i, "RSU_Payout_Source"] = new_source
     else:
         rsu_df = pd.DataFrame({
             "Month": list(range(1, projection_months + 1)),
@@ -1045,6 +1195,8 @@ def main() -> None:
             "RSU_Cumulative_Stocks": [0.0] * projection_months,
             "RSU_Cumulative_Value": [0.0] * projection_months,
             "RSU_Cumulative_Rest": [0.0] * projection_months,
+            "RSU_Payout_Number": [0] * projection_months,
+            "RSU_Payout_Source": [""] * projection_months,
         })
 
     espp_df = calculate_espp_vesting(
@@ -1054,6 +1206,9 @@ def main() -> None:
         espp_discount,
         espp_vesting_interval,
         espp_start_offset,
+        espp_bonuses_enabled,
+        espp_13th_factor,
+        espp_14th_factor,
     )
 
     self_df = calculate_self_buying(
@@ -1070,6 +1225,8 @@ def main() -> None:
     combined_df = pd.DataFrame({
         "Month": list(range(1, projection_months + 1)),
         "Stock_Price": stock_prices_eur,
+        "RSU_Payout_Number": rsu_df["RSU_Payout_Number"],
+        "RSU_Payout_Source": rsu_df["RSU_Payout_Source"],
         "RSU_Value": rsu_df["RSU_Cumulative_Value"],
         "ESPP_Value": espp_df["ESPP_Cumulative_Value"],
         "Self_Value": self_df["Self_Cumulative_Value"],
@@ -1113,18 +1270,6 @@ def main() -> None:
     # Visualizations
     st.header("📈 Visualizations")
 
-    # Stock price over time
-    st.subheader("Stock Price Over Time")
-    fig_price = px.line(
-        combined_df,
-        x="Month",
-        y="Stock_Price",
-        title="Stock Price Projection",
-        labels={"Stock_Price": "Price (€)", "Month": "Month"},
-    )
-    fig_price.update_layout(hovermode="x unified")
-    st.plotly_chart(fig_price, width="stretch")
-
     # Portfolio values over time (stacked area)
     st.subheader("Portfolio Value Over Time")
     fig_portfolio = go.Figure()
@@ -1144,27 +1289,40 @@ def main() -> None:
         mode="lines",
         name="ESPP",
         stackgroup="one",
-        fillcolor="rgba(239, 85, 59, 0.5)",
-        line=dict(color="rgb(239, 85, 59)"),
+        fillcolor="rgba(255, 182, 193, 0.5)",
+        line=dict(color="rgb(255, 182, 193)"),
     ))
     fig_portfolio.add_trace(go.Scatter(
         x=combined_df["Month"],
         y=combined_df["Self_Value"],
         mode="lines",
-        name="Self-Bought",
+        name="Self Buying",
         stackgroup="one",
-        fillcolor="rgba(0, 204, 150, 0.5)",
-        line=dict(color="rgb(0, 204, 150)"),
+        fillcolor="rgba(34, 139, 34, 0.5)",
+        line=dict(color="rgb(34, 139, 34)"),
     ))
 
     fig_portfolio.update_layout(
-        title="Cumulative Portfolio Value by Category",
+        title="Portfolio Value Projection (Stacked Area)",
         xaxis_title="Month",
         yaxis_title="Value (€)",
         hovermode="x unified",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
     st.plotly_chart(fig_portfolio, width="stretch")
+
+    # Raw data
+    if st.checkbox("Show graph raw data"):
+        display_df = combined_df.copy()
+        for col in ["Stock_Price", "RSU_Value", "ESPP_Value", "Self_Value", "Total_Value"]:
+            display_df[col] = display_df[col].apply(lambda x: f"€{x:,.2f}")
+        
+        # Format payout numbers to show empty when 0, otherwise show the number
+        display_df["RSU_Payout_Number"] = display_df["RSU_Payout_Number"].apply(
+            lambda x: f"Payout #{x}" if x > 0 else ""
+        )
+        
+        st.dataframe(display_df, width="stretch")
 
     # Individual category breakdown
     st.subheader("Category Breakdown")
@@ -1202,10 +1360,10 @@ def main() -> None:
 
         # RSU vesting events
         vest_events = rsu_df[rsu_df["RSU_Stocks_Vested"] > 0][
-            ["Month", "RSU_Stocks_Vested", "RSU_Stocks_Sold", "RSU_Stocks_Kept",
+            ["Month", "RSU_Payout_Number", "RSU_Payout_Source", "RSU_Stocks_Vested", "RSU_Stocks_Sold", "RSU_Stocks_Kept",
              "RSU_Tax_Due", "RSU_Sale_Proceeds", "RSU_Rest_Amount", "RSU_Value"]
         ].copy()
-        vest_events.columns = ["Month", "Vested", "Sold", "Kept",
+        vest_events.columns = ["Month", "Payout #", "Source", "Vested", "Sold", "Kept",
                                "Tax Due (€)", "Sale Proceeds (€)", "Rest (€)", "Value (€)"]
         if not vest_events.empty:
             st.dataframe(vest_events, width="stretch")
@@ -1247,13 +1405,17 @@ def main() -> None:
             total_invested = monthly_inv * projection_months
             st.markdown(f"- **Total Invested:** {format_currency(total_invested)}")
 
-    # Raw data
-    if st.checkbox("Show Raw Data"):
-        st.subheader("Combined Data")
-        display_df = combined_df.copy()
-        for col in ["Stock_Price", "RSU_Value", "ESPP_Value", "Self_Value", "Total_Value"]:
-            display_df[col] = display_df[col].apply(lambda x: f"€{x:,.2f}")
-        st.dataframe(display_df, width="stretch")
+    # Stock price over time (moved to last)
+    st.subheader("Stock Price Over Time")
+    fig_price = px.line(
+        combined_df,
+        x="Month",
+        y="Stock_Price",
+        title="Stock Price Projection",
+        labels={"Stock_Price": "Price (€)", "Month": "Month"},
+    )
+    fig_price.update_layout(hovermode="x unified")
+    st.plotly_chart(fig_price, width="stretch")
 
 
 if __name__ == "__main__":
